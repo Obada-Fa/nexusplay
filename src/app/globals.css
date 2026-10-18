@@ -1,0 +1,163 @@
+@import "tailwindcss";
+
+:root {
+  --font-inter: "Inter", sans-serif;
+  --console-bg: #06060e;
+  --console-surface: #0c0c1a;
+  --console-border: rgba(255, 255, 255, 0.06);
+  --console-glow-violet: rgba(139, 92, 246, 0.5);
+  --console-glow-cyan: rgba(6, 182, 212, 0.4);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  font-family: var(--font-inter), system-ui, sans-serif;
+  background: var(--console-bg);
+  color: #fff;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+/* ─── Console scanlines overlay ─────────────────────────────────────────── */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 99999;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.03) 2px,
+    rgba(0, 0, 0, 0.03) 4px
+  );
+}
+
+/* ─── Touch control helpers ─────────────────────────────────────────────── */
+.touch-none {
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ─── Scrollbar ─────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(139, 92, 246, 0.2); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(139, 92, 246, 0.4); }
+
+/* ─── Console glow utilities ────────────────────────────────────────────── */
+.console-glow-violet {
+  box-shadow:
+    0 0 30px var(--console-glow-violet),
+    0 0 60px rgba(139, 92, 246, 0.15),
+    inset 0 0 30px rgba(139, 92, 246, 0.05);
+}
+
+.console-glow-cyan {
+  box-shadow:
+    0 0 30px var(--console-glow-cyan),
+    0 0 60px rgba(6, 182, 212, 0.15);
+}
+
+.console-glow-red {
+  box-shadow:
+    0 0 30px rgba(239, 68, 68, 0.5),
+    0 0 60px rgba(239, 68, 68, 0.15);
+}
+
+.console-glow-amber {
+  box-shadow:
+    0 0 30px rgba(245, 158, 11, 0.5),
+    0 0 60px rgba(245, 158, 11, 0.15);
+}
+
+/* ─── Console card hover ────────────────────────────────────────────────── */
+.console-card {
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.console-card:hover {
+  transform: translateY(-4px);
+}
+.console-card:active {
+  transform: scale(0.96);
+}
+
+/* ─── Console button press effect ───────────────────────────────────────── */
+.console-btn-press {
+  transition: all 0.1s ease-out;
+}
+.console-btn-press:active {
+  transform: scale(0.93);
+}
+
+/* ─── Slide-in animation for player list ────────────────────────────────── */
+@keyframes slideInLeft {
+  from { opacity: 0; transform: translateX(-12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.animate-in.slide-in-from-left-4 {
+  animation: slideInLeft 0.3s ease-out forwards;
+}
+
+/* ─── Fade-up animation for landing cards ───────────────────────────────── */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-up { animation: fadeUp 0.6s ease-out forwards; }
+.animation-delay-100 { animation-delay: 0.1s; opacity: 0; }
+.animation-delay-200 { animation-delay: 0.2s; opacity: 0; }
+.animation-delay-300 { animation-delay: 0.3s; opacity: 0; }
+
+/* ─── Console boot-up pulse ─────────────────────────────────────────────── */
+@keyframes consolePulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+.console-pulse {
+  animation: consolePulse 2s ease-in-out infinite;
+}
+
+/* ─── Game tile select shimmer ──────────────────────────────────────────── */
+@keyframes tileShimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+.tile-selected::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(139, 92, 246, 0.3),
+    rgba(6, 182, 212, 0.3),
+    transparent
+  );
+  background-size: 200% 100%;
+  animation: tileShimmer 2s ease-in-out infinite;
+  z-index: -1;
+}
+
+/* ─── Status LED pulse ─────────────────────────────────────────────────── */
+@keyframes ledPulse {
+  0%, 100% { box-shadow: 0 0 4px currentColor; }
+  50% { box-shadow: 0 0 12px currentColor, 0 0 20px currentColor; }
+}
+.led-pulse {
+  animation: ledPulse 2s ease-in-out infinite;
+}
