@@ -1,4 +1,6 @@
-// Procedural 3D polar bear: ~25 ellipsoids in bear-local space, rotated by pose,
+import { drawBearSprite } from "./bear-sprite";
+
+// Procedural fallback: ~25 ellipsoids in bear-local space, rotated by pose,
 // projected with the same 3/4 camera as the floe, depth-sorted and shaded.
 
 const TAU = Math.PI * 2;
@@ -62,6 +64,7 @@ function makeXf(face: number, pitch: number, pivot: V3) {
 }
 
 export function drawBearModel(ctx: CanvasRenderingContext2D, sx: number, sy: number, scale: number, p: BearPose) {
+  if (drawBearSprite(ctx, sx, sy, scale, p)) return;
   const { t } = p;
   const m = scale * 1.05 * (p.power ? 1.12 : 1);
   const stride = Math.min(1, p.speed / 160) * (1 - p.dash);

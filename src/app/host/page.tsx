@@ -15,6 +15,7 @@ import { createSnake, SlitherEngine } from "@/lib/slither/engine";
 import { renderSlither } from "@/lib/slither/render";
 import { PolarEngine, STAGES, CLASSES, RULES as POLAR_RULES } from "@/lib/polar/engine";
 import { renderPolar } from "@/lib/polar/render";
+import { preloadBearSprites } from "@/lib/polar/bear-sprite";
 import { WormsEngine, RULES as WORMS_RULES, type Key as WormsKey, type WormsSnapshot } from "@/lib/worms/engine";
 import { WormsRenderer } from "@/lib/worms/render";
 import { WormsAudio } from "@/lib/worms/audio";
@@ -964,6 +965,7 @@ useEffect(() => {
   // ─── PolarBash: fixed 60 Hz sim, HUD + phone telemetry at 10 Hz ────────────
   useEffect(() => {
     if (activeGame !== "polarbash") return;
+    preloadBearSprites();
     const game = new PolarEngine();
     for (const s of snakesRef.current.values()) game.addPlayer(s.player);
     polarRef.current = game;

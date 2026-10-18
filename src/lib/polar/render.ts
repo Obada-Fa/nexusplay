@@ -218,7 +218,7 @@ function drawBear(ctx: CanvasRenderingContext2D, g: PolarEngine, b: Bear, P: Pro
     ctx.beginPath(); ctx.ellipse(gx, gy, 40 * s, 40 * s * K, 0, 0, TAU); ctx.stroke(); ctx.restore();
   }
   drawBearModel(ctx, gx, gy, s, bp);
-  const top = gy - (58 + air) * s;
+  const top = gy - ((bp.celebrate ? 87 : 65) * (bp.power ? 1.12 : 1) + air) * s;
   if (b.stun > 0.05) {
     ctx.font = `${13 * s}px system-ui`; ctx.textAlign = "center";
     for (let i = 0; i < 3; i++) {
