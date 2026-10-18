@@ -2,7 +2,10 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { FORCE_HOST_PARAM, isController } from "@/lib/device";
 import { SessionMenu } from "@/components/session-menu";
+import { GameIcon } from "@/components/game-icons";
 import type { SessionState, RemoteCommand, Player } from "@/types/socket";
 import QRCode from "qrcode";
 import { getSocket, destroySocket } from "@/lib/socket";
@@ -57,6 +60,15 @@ const GAMES: GameInfo[] = [
   },
 ];
 
+// Home-screen extras: real gameplay captures live in public/games.
+const GAME_META: Record<string, { preview: string; tagline: string; players: string; tags: string[] }> = {
+  snake: { preview: "/games/snake.webp", tagline: "Eat. Grow. Cut them off.", players: "1–8", tags: ["Arena", "Real-time"] },
+  dash: { preview: "/games/dash.webp", tagline: "One tap between you and the spikes.", players: "1+", tags: ["Rhythm", "One button"] },
+  pong: { preview: "/games/pong.webp", tagline: "The original duel, supercharged.", players: "2", tags: ["Versus", "Classic"] },
+  polarbash: { preview: "/games/polarbash.webp", tagline: "Last bear on the ice wins.", players: "1–4 + CPU", tags: ["Party", "Knockout"] },
+  worms: { preview: "/games/worms.webp", tagline: "Aim. Fire. Blow up the map.", players: "2–4 teams", tags: ["Turn-based", "Artillery"] },
+};
+
 // Host keyboard → WormBlitz keyboard team.
 const WORMS_KEYMAP: Record<string, WormsKey> = {
   ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down", " ": "fire", Enter: "jump", Backspace: "backflip",
@@ -103,11 +115,18 @@ function generateRoomCode(): string {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function HostPage() {
+  const router = useRouter();
   const [roomCode, setRoomCode] = useState("");
   useEffect(() => {
+    // iPads slip past the proxy with a Mac user agent; bounce them before a room is created.
+    const params = new URLSearchParams(window.location.search);
+    if (params.get(FORCE_HOST_PARAM) !== "host" && isController(navigator.userAgent, navigator.maxTouchPoints)) {
+      router.replace("/join");
+      return;
+    }
     const frame = requestAnimationFrame(() => setRoomCode(generateRoomCode()));
     return () => cancelAnimationFrame(frame);
-  }, []);
+  }, [router]);
   const [status, setStatus] = useState<"connecting" | "ready" | "error">("connecting");
   const [qrDataUrl, setQrDataUrl] = useState<string>("");
   const [joinUrl, setJoinUrl] = useState<string>("");
@@ -1099,6 +1118,11 @@ useEffect(() => {
     return () => window.removeEventListener("resize", resize);
   }, [activeGame]);
 
+  const launchGame = (idx: number) => {
+    setActiveGame(GAMES[idx].id);
+    getSocket().emit("game_started", { gameIndex: idx, gameName: GAMES[idx].name });
+  };
+
   // ─── Keyboard navigation for gallery ──────────────────────────────────────
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1109,9 +1133,7 @@ useEffect(() => {
       } else if (e.key === "ArrowRight") {
         setGalleryIndex((prev) => (prev + 1) % GAMES.length);
       } else if (e.key === "Enter") {
-        const idx = galleryIndexRef.current;
-        setActiveGame(GAMES[idx].id);
-        getSocket().emit("game_started", { gameIndex: idx, gameName: GAMES[idx].name });
+        launchGame(galleryIndexRef.current);
       }
     };
     
@@ -1334,107 +1356,61 @@ useEffect(() => {
         </div>
       ) : (
         /* ── Gallery: console home screen ──────────────────────────────── */
-        <div className="flex-1 flex flex-col items-center justify-center p-6 gap-10">
-          {/* Title */}
-          <div className="text-center">
-            <h2 className="text-3xl font-black tracking-tight bg-gradient-to-r from-violet-400 via-fuchsia-400 to-cyan-400 bg-clip-text text-transparent">
-              SELECT GAME
-            </h2>
-            <p className="text-white/20 text-xs mt-2 font-mono tracking-wider">
-              Use your phone remote to browse and start · Keyboard: ← → Enter
-            </p>
+        <div className="nx-home" style={{ ["--gc" as string]: GAMES[galleryIndex].color }}>
+          {/* Ambient backdrop: the selected game's own footage, blurred */}
+          <div className="nx-backdrop" aria-hidden>
+            {GAMES.map((game, idx) => <img key={game.id} src={GAME_META[game.id].preview} alt="" className={idx === galleryIndex ? "on" : ""} />)}
           </div>
 
-          {/* Game grid */}
-          <div className="flex items-center gap-6">
-            {GAMES.map((game, idx) => {
-              const isSelected = idx === galleryIndex;
-              return (
-                <div
-                  key={game.id}
-                  className={`relative flex flex-col items-center gap-3 transition-all duration-400 ${
-                    isSelected ? "scale-110" : "scale-90 opacity-50 hover:opacity-70"
-                  }`}
-                >
-                  {/* Tile */}
-                  <button
-                    onClick={() => { setGalleryIndex(idx); }}
-                    className={`relative w-44 h-52 rounded-2xl border flex flex-col items-center justify-center gap-3 transition-all duration-300 cursor-pointer
-                      ${isSelected
-                        ? "border-white/20 bg-white/[0.06] console-glow-violet tile-selected"
-                        : "border-white/[0.04] bg-white/[0.02] hover:border-white/10 hover:bg-white/[0.04]"
-                      }`}
-                    style={isSelected ? { borderColor: game.color + "40", boxShadow: `0 0 40px ${game.color}20, 0 0 80px ${game.color}08` } : {}}
-                  >
-                    <span className="text-5xl drop-shadow-lg">{game.icon}</span>
-                    <h3
-                      className="text-base font-black tracking-tight"
-                      style={isSelected ? { color: game.color } : { color: "rgba(255,255,255,0.6)" }}
-                    >
-                      {game.name}
-                    </h3>
-                    {isSelected && (
-                      <p className="text-[10px] text-white/30 text-center px-4 leading-relaxed">
-                        {game.description}
-                      </p>
-                    )}
-                  </button>
-
-                  {/* Select indicator */}
-                  {isSelected && (
-                    <div className="flex items-center gap-2">
-                      <span className="w-1.5 h-1.5 rounded-full console-pulse" style={{ backgroundColor: game.color }} />
-                      <span className="text-[10px] font-bold uppercase tracking-widest text-white/30">
-                        Press ENTER to start
-                      </span>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+          <div className="nx-stage">
+          <section className="nx-hero" key={GAMES[galleryIndex].id}>
+            <span className="nx-eyebrow">NEXUS ORIGINAL · {String(galleryIndex + 1).padStart(2, "0")} / {String(GAMES.length).padStart(2, "0")}</span>
+            <h2>{GAMES[galleryIndex].name}</h2>
+            <p className="nx-tagline">{GAME_META[GAMES[galleryIndex].id].tagline}</p>
+            <p className="nx-desc">{GAMES[galleryIndex].description}</p>
+            <div className="nx-chips">
+              <span>👥 {GAME_META[GAMES[galleryIndex].id].players}</span>
+              {GAME_META[GAMES[galleryIndex].id].tags.map(t => <span key={t}>{t}</span>)}
+            </div>
+            <button className="nx-play" onClick={() => launchGame(galleryIndex)}><svg viewBox="0 0 12 12" width="14" height="14" aria-hidden><path d="M2 1.2v9.6L10.5 6z" fill="currentColor" /></svg>Play <kbd>ENTER</kbd></button>
+          </section>
+          <figure className="nx-preview" onClick={() => launchGame(galleryIndex)}>
+            {GAMES.map((game, idx) => <img key={game.id} src={GAME_META[game.id].preview} alt={idx === galleryIndex ? `${game.name} gameplay` : ""} className={idx === galleryIndex ? "on" : ""} />)}
+            <figcaption><i />GAMEPLAY</figcaption>
+          </figure>
           </div>
 
-          {/* Dots */}
-          <div className="flex items-center gap-2">
+          {/* Game shelf: hover or remote selection expands a card into a live screenshot */}
+          <div className="nx-shelf">
             {GAMES.map((game, idx) => (
-              <div
+              <button
                 key={game.id}
-                className={`w-1.5 h-1.5 rounded-full transition-all duration-300 ${
-                  idx === galleryIndex ? "bg-violet-400 w-6" : "bg-white/10"
-                }`}
-              />
+                className={`nx-card ${idx === galleryIndex ? "on" : ""}`}
+                style={{ ["--gc" as string]: game.color }}
+                onMouseEnter={() => setGalleryIndex(idx)}
+                onFocus={() => setGalleryIndex(idx)}
+                onClick={() => idx === galleryIndex ? launchGame(idx) : setGalleryIndex(idx)}
+                aria-label={`${game.name}: ${game.description}`}
+              >
+                <img className="nx-shot" src={GAME_META[game.id].preview} alt="" />
+                <span className="nx-card-fade" />
+                <GameIcon id={game.id} size={idx === galleryIndex ? 64 : 92} className="nx-icon" />
+                <span className="nx-card-name">{game.name}</span>
+              </button>
             ))}
           </div>
 
-          {/* Room info floating panel */}
-          <div className="flex items-center gap-4 bg-white/[0.03] backdrop-blur-md rounded-2xl border border-white/[0.06] px-6 py-4">
-            <div className="text-center">
-              <p className="text-[9px] uppercase tracking-widest text-white/25 mb-1">Room</p>
-              <span className="text-2xl font-black tracking-widest bg-gradient-to-r from-violet-400 to-cyan-400 bg-clip-text text-transparent">
-                {roomCode}
-              </span>
-            </div>
-            <div className="w-px h-10 bg-white/[0.06]" />
-            {qrDataUrl ? (
-              <div className="rounded-lg overflow-hidden border border-white/[0.06] bg-white p-0.5">
-                <img src={qrDataUrl} alt={`QR ${roomCode}`} className="w-36 h-36" />
+          <footer className="nx-dock">
+            <div className="nx-hint">← → browse · ENTER play · or use your phone as the remote</div>
+            <div className="nx-room">
+              <div>
+                <span>ROOM</span>
+                <strong>{roomCode}</strong>
+                <button onClick={handleCopy}>{copyFeedback ? "✓ Copied" : "Copy link"}</button>
               </div>
-            ) : (
-              <div className="w-36 h-36 rounded-lg bg-white/[0.03] animate-pulse" />
-            )}
-            <div className="w-px h-10 bg-white/[0.06]" />
-            <div className="flex flex-col gap-2">
-              <button
-                onClick={handleCopy}
-                className="text-[10px] font-bold uppercase tracking-wider px-4 py-2 rounded-lg bg-violet-600/20 hover:bg-violet-600/40 text-violet-300 border border-violet-500/20 hover:border-violet-400/40 transition-all"
-              >
-                {copyFeedback ? "✓ Copied" : "Copy Link"}
-              </button>
-              <p className="text-[9px] text-white/20 font-mono max-w-[200px] truncate">
-                {joinUrl || "..."}
-              </p>
+              {qrDataUrl ? <img src={qrDataUrl} alt={`QR ${roomCode}`} /> : <i />}
             </div>
-          </div>
+          </footer>
         </div>
       )}
     </main>

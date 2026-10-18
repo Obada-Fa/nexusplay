@@ -327,3 +327,57 @@ body::after {
 .session-overlay { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px; background: #06060edc; overflow: auto; color: white; }
 .session-panel { width: min(100%, 420px); max-height: 100%; overflow: auto; display: flex; flex-direction: column; gap: 14px; padding: 24px; background: #141124; border: 1px solid #ffffff30; border-radius: 24px; }
 .session-panel .selected, .session-panel button:focus-visible { outline: 2px solid #a78bfa; background: #493477; }
+
+/* ─── Home screen (game shelf) ───────────────────────────────────────────── */
+.nx-home { position:relative; flex:1; min-height:0; display:grid; grid-template-rows:1fr auto auto; gap:28px; padding:48px 56px 28px; overflow:hidden; isolation:isolate; }
+.nx-backdrop { position:absolute; inset:-40px; z-index:-1; }
+.nx-backdrop img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; opacity:0; transform:scale(1.08); filter:blur(28px) saturate(1.4) brightness(.45); transition:opacity .7s ease, transform 6s ease; }
+.nx-backdrop img.on { opacity:1; transform:scale(1); }
+.nx-backdrop::after { content:""; position:absolute; inset:0; background:linear-gradient(90deg,#06060ef2 0%,#06060eb0 45%,#06060e40 100%), linear-gradient(0deg,#06060e 0%,transparent 45%), radial-gradient(ellipse at 20% 30%, color-mix(in srgb, var(--gc) 22%, transparent), transparent 60%); }
+.nx-stage { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.15fr); gap:48px; align-items:center; min-height:0; }
+.nx-preview { position:relative; aspect-ratio:16/9; max-height:100%; justify-self:end; width:100%; border-radius:24px; overflow:hidden; cursor:pointer; border:2px solid color-mix(in srgb, var(--gc) 60%, #fff0); box-shadow:0 30px 90px #000a, 0 0 80px color-mix(in srgb, var(--gc) 30%, transparent); transform:perspective(1400px) rotateY(-7deg); transition:border-color .5s, box-shadow .5s, transform .5s; background:#000; }
+.nx-preview:hover { transform:perspective(1400px) rotateY(-2deg) scale(1.01); }
+.nx-preview img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; opacity:0; transform:scale(1.06); transition:opacity .5s, transform 1.2s cubic-bezier(.16,1,.3,1); }
+.nx-preview img.on { opacity:1; transform:scale(1); }
+.nx-preview::after { content:""; position:absolute; inset:0; background:linear-gradient(115deg,#ffffff1c 0%,transparent 35%); pointer-events:none; }
+.nx-preview figcaption { position:absolute; top:14px; left:14px; display:flex; align-items:center; gap:7px; padding:5px 10px; border-radius:8px; background:#000a; backdrop-filter:blur(6px); font:800 9px ui-monospace,monospace; letter-spacing:2px; color:#fff; }
+.nx-preview figcaption i { width:7px; height:7px; border-radius:50%; background:#ff3d5a; box-shadow:0 0 8px #ff3d5a; animation:consolePulse 1.4s infinite; }
+.nx-hero { max-width:620px; animation:nxIn .45s cubic-bezier(.16,1,.3,1); }
+.nx-eyebrow { font:700 10px ui-monospace,monospace; letter-spacing:3px; color:var(--gc); }
+.nx-hero h2 { font-size:clamp(44px,6vw,84px); font-weight:900; letter-spacing:-3px; line-height:.95; margin:10px 0 12px; background:linear-gradient(180deg,#fff 30%,color-mix(in srgb, var(--gc) 70%, #fff)); -webkit-background-clip:text; background-clip:text; color:transparent; filter:drop-shadow(0 6px 30px color-mix(in srgb, var(--gc) 45%, transparent)); }
+.nx-tagline { font-size:20px; font-weight:800; color:#fff; }
+.nx-desc { margin-top:8px; font-size:14px; line-height:1.6; color:#ffffff99; max-width:520px; }
+.nx-chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:16px; }
+.nx-chips span { padding:5px 12px; border-radius:99px; font-size:11px; font-weight:700; color:#ffffffcc; background:#ffffff10; border:1px solid #ffffff1a; backdrop-filter:blur(8px); }
+.nx-play { display:inline-flex; align-items:center; gap:12px; margin-top:22px; padding:14px 22px 14px 26px; border:0; border-radius:14px; background:var(--gc); color:#0a0612; font-size:16px; font-weight:900; cursor:pointer; box-shadow:0 10px 40px color-mix(in srgb, var(--gc) 50%, transparent), inset 0 -3px 0 #0003; transition:transform .15s, filter .15s; }
+.nx-play:hover { transform:translateY(-2px); filter:brightness(1.12); }
+.nx-play kbd { font:800 10px ui-monospace,monospace; padding:4px 7px; border-radius:6px; background:#0a061226; letter-spacing:1px; }
+@keyframes nxIn { from { opacity:0; transform:translateY(14px); } }
+
+.nx-shelf { display:flex; gap:14px; height:220px; align-items:stretch; }
+.nx-card { position:relative; flex:0 0 150px; border-radius:22px; overflow:hidden; cursor:pointer; border:2px solid #ffffff14; background:linear-gradient(160deg, color-mix(in srgb, var(--gc) 26%, #11111f), #0b0b16); transition:flex-basis .5s cubic-bezier(.16,1,.3,1), border-color .3s, box-shadow .3s, transform .3s; outline:none; }
+.nx-card:hover:not(.on) { transform:translateY(-4px); border-color:#ffffff30; }
+.nx-card.on { flex-basis:400px; border-color:var(--gc); box-shadow:0 0 0 4px color-mix(in srgb, var(--gc) 25%, transparent), 0 20px 60px color-mix(in srgb, var(--gc) 35%, transparent); }
+.nx-card:focus-visible { box-shadow:0 0 0 4px #fff; }
+.nx-shot { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; opacity:0; transform:scale(1.15); transition:opacity .45s, transform .9s cubic-bezier(.16,1,.3,1); }
+.nx-card.on .nx-shot { opacity:1; transform:scale(1); }
+.nx-card-fade { position:absolute; inset:0; background:linear-gradient(0deg,#06060ef0 0%,#06060e60 35%,transparent 60%); opacity:0; transition:opacity .4s; }
+.nx-card.on .nx-card-fade { opacity:1; }
+.nx-icon { position:absolute; left:50%; top:42%; transform:translate(-50%,-50%); filter:drop-shadow(0 10px 20px #0009); transition:all .5s cubic-bezier(.16,1,.3,1); }
+.nx-card:hover:not(.on) .nx-icon { transform:translate(-50%,-50%) scale(1.08) rotate(-4deg); }
+.nx-card.on .nx-icon { left:18px; top:auto; bottom:16px; transform:none; }
+.nx-card-name { position:absolute; left:0; right:0; bottom:16px; text-align:center; font-size:13px; font-weight:900; color:#ffffffcc; white-space:nowrap; transition:all .4s; }
+.nx-card.on .nx-card-name { left:96px; bottom:34px; text-align:left; font-size:22px; color:#fff; letter-spacing:-.5px; }
+
+.nx-dock { display:flex; align-items:end; justify-content:space-between; gap:20px; }
+.nx-hint { font:600 10px ui-monospace,monospace; letter-spacing:2px; color:#ffffff40; text-transform:uppercase; }
+.nx-room { display:flex; align-items:center; gap:16px; padding:10px 10px 10px 18px; border-radius:18px; background:#0b0b18cc; border:1px solid #ffffff14; backdrop-filter:blur(12px); }
+.nx-room span { display:block; font:700 9px ui-monospace,monospace; letter-spacing:2px; color:#ffffff55; }
+.nx-room strong { display:block; font-size:28px; font-weight:900; letter-spacing:6px; color:#fff; }
+.nx-room button { margin-top:4px; padding:4px 10px; border-radius:8px; border:1px solid #ffffff20; background:#ffffff0d; color:#ffffffaa; font-size:10px; font-weight:700; cursor:pointer; }
+.nx-room button:hover { background:#ffffff1f; color:#fff; }
+.nx-room img, .nx-room i { width:92px; height:92px; border-radius:10px; background:#fff; padding:3px; }
+.nx-room i { display:block; background:#ffffff10; }
+@media(max-width:900px) { .nx-stage { grid-template-columns:1fr; } .nx-preview { display:none; } }
+@media(max-width:1100px) { .nx-home { padding:28px 24px 20px; } .nx-card { flex-basis:96px; } .nx-card.on { flex-basis:300px; } .nx-shelf { height:170px; } .nx-hint { display:none; } }
+@media(max-height:760px) { .nx-shelf { height:160px; } .nx-home { gap:18px; padding-top:24px; } .nx-desc { display:none; } }
