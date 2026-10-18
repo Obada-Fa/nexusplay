@@ -5,7 +5,7 @@ import { createServer } from "http";
 import { Server } from "socket.io";
 import { networkInterfaces } from "os";
 
-const PORT = 3001;
+const PORT = Number(process.env.SOCKET_PORT || 3001);
 const HOST = "0.0.0.0"; // Listen on all interfaces so LAN devices can connect
 
 function getLanIp() {
@@ -38,10 +38,6 @@ const PLAYER_COLORS = [
   "#F72585", // pink
 ];
 
-function getColorForIndex(index) {
-  return PLAYER_COLORS[index % PLAYER_COLORS.length];
-}
-
 // ─── HTTP + Socket.io bootstrap ───────────────────────────────────────────────
 const httpServer = createServer((req, res) => {
   if (req.url === "/health") {
@@ -66,13 +62,18 @@ const io = new Server(httpServer, {
 // ─── Connection handler ───────────────────────────────────────────────────────
 io.on("connection", (socket) => {
   console.log(`[+] Socket connected: ${socket.id}`);
+  socket.use(([event, payload], next) => {
+    if (event !== "game_ended" && (!payload || typeof payload !== "object")) return;
+    next();
+  });
 
   // ── HOST: Creates a room ──────────────────────────────────────────────────
   socket.on("host_create_room", ({ roomCode }) => {
+    if (typeof roomCode !== "string" || !/^\d{4}$/.test(roomCode)) return;
     if (rooms.has(roomCode)) {
-      // Stale room — clean it up and let the new host take over
-      console.log(`[~] Room ${roomCode} already exists — reclaiming for new host.`);
-      rooms.delete(roomCode);
+      if (rooms.get(roomCode).hostSocketId === socket.id) return;
+      socket.emit("room_closed", { message: "Room code already in use. Reload to create a new room." });
+      return;
     }
 
     rooms.set(roomCode, {
@@ -98,11 +99,21 @@ io.on("connection", (socket) => {
       return;
     }
 
+    if (socket.data.roomCode) {
+      const existing = room.players.get(socket.id);
+      if (existing) socket.emit("join_success", { player: existing, roomCode });
+      else socket.emit("join_error", { message: "Already connected to a room. Reload to switch rooms." });
+      return;
+    }
+    if (room.players.size >= 8) {
+      socket.emit("join_error", { message: "This room is full (8 players). Wait for a spot to open." });
+      return;
+    }
     const playerIndex = room.players.size;
     const player = {
       id: socket.id,
-      name: playerName || `Player ${playerIndex + 1}`,
-      color: getColorForIndex(playerIndex),
+      name: typeof playerName === "string" && playerName.trim() ? playerName.trim().slice(0, 16) : `Player ${playerIndex + 1}`,
+      color: PLAYER_COLORS.find(color => ![...room.players.values()].some(p => p.color === color)),
       joinedAt: Date.now(),
     };
 
@@ -116,7 +127,7 @@ io.on("connection", (socket) => {
     console.log(`[P] ${player.name} (${socket.id}) joined room ${roomCode}`);
 
     // Confirm to the controller
-    socket.emit("join_success", { player, roomCode });
+    socket.emit("join_success", { player, roomCode, gameName: room.currentGame?.gameName ?? "" });
 
     // If a game is already active, tell the new player
     if (room.currentGame) {
@@ -134,7 +145,7 @@ io.on("connection", (socket) => {
   socket.on("gallery_navigate", ({ roomCode, direction }) => {
     if (!roomCode) return;
     const room = rooms.get(roomCode);
-    if (!room) return;
+    if (!room || !room.players.has(socket.id) || socket.data.roomCode !== roomCode) return;
     io.to(room.hostSocketId).emit("gallery_navigate", {
       playerId: socket.id,
       direction,
@@ -144,7 +155,7 @@ io.on("connection", (socket) => {
   socket.on("gallery_select", ({ roomCode }) => {
     if (!roomCode) return;
     const room = rooms.get(roomCode);
-    if (!room) return;
+    if (!room || !room.players.has(socket.id) || socket.data.roomCode !== roomCode) return;
     io.to(room.hostSocketId).emit("gallery_select", {
       playerId: socket.id,
     });
@@ -153,7 +164,7 @@ io.on("connection", (socket) => {
   socket.on("gallery_back", ({ roomCode }) => {
     if (!roomCode) return;
     const room = rooms.get(roomCode);
-    if (!room) return;
+    if (!room || !room.players.has(socket.id)) return;
     room.currentGame = null;
     io.to(room.hostSocketId).emit("gallery_back", {
       playerId: socket.id,
@@ -162,9 +173,10 @@ io.on("connection", (socket) => {
 
   // ── CONTROLLER: Sends movement angle ──────────────────────────────────────
   socket.on("steer", ({ roomCode, angle }) => {
+    if (angle !== null && (typeof angle !== "number" || !Number.isFinite(angle))) return;
     if (!roomCode) return;
     const room = rooms.get(roomCode);
-    if (!room) return;
+    if (!room || !room.players.has(socket.id) || socket.data.roomCode !== roomCode) return;
     io.to(room.hostSocketId).emit("player_steer", {
       playerId: socket.id,
       angle,
@@ -175,7 +187,7 @@ io.on("connection", (socket) => {
   socket.on("boost_start", ({ roomCode }) => {
     if (!roomCode) return;
     const room = rooms.get(roomCode);
-    if (!room) return;
+    if (!room || !room.players.has(socket.id) || socket.data.roomCode !== roomCode) return;
     io.to(room.hostSocketId).emit("player_boost_start", {
       playerId: socket.id,
     });
@@ -184,7 +196,7 @@ io.on("connection", (socket) => {
   socket.on("boost_end", ({ roomCode }) => {
     if (!roomCode) return;
     const room = rooms.get(roomCode);
-    if (!room) return;
+    if (!room || !room.players.has(socket.id) || socket.data.roomCode !== roomCode) return;
     io.to(room.hostSocketId).emit("player_boost_end", {
       playerId: socket.id,
     });
@@ -194,7 +206,7 @@ io.on("connection", (socket) => {
   socket.on("pong_move", ({ roomCode, direction }) => {
     if (!roomCode) return;
     const room = rooms.get(roomCode);
-    if (!room) return;
+    if (!room || !room.players.has(socket.id) || socket.data.roomCode !== roomCode) return;
     io.to(room.hostSocketId).emit("player_pong_move", {
       playerId: socket.id,
       direction,
@@ -205,7 +217,7 @@ io.on("connection", (socket) => {
   socket.on("respawn_request", ({ roomCode }) => {
     if (!roomCode) return;
     const room = rooms.get(roomCode);
-    if (!room) return;
+    if (!room || !room.players.has(socket.id) || socket.data.roomCode !== roomCode) return;
     io.to(room.hostSocketId).emit("player_respawn_request", {
       playerId: socket.id,
     });
@@ -215,7 +227,7 @@ io.on("connection", (socket) => {
   socket.on("dash_jump", ({ roomCode }) => {
     if (!roomCode) return;
     const room = rooms.get(roomCode);
-    if (!room) return;
+    if (!room || !room.players.has(socket.id) || socket.data.roomCode !== roomCode) return;
     io.to(room.hostSocketId).emit("player_dash_jump", {
       playerId: socket.id,
     });
@@ -224,7 +236,7 @@ io.on("connection", (socket) => {
   // ── HOST: Tell controller they died ───────────────────────────────────────
   socket.on("player_died", ({ playerId, score }) => {
     // Only the host should send this
-    if (socket.data.isHost === false) return; 
+    if (!socket.data.isHost || !rooms.get(socket.data.roomCode)?.players.has(playerId)) return;
     io.to(playerId).emit("player_died", { score });
   });
 
@@ -233,7 +245,7 @@ io.on("connection", (socket) => {
     const roomCode = socket.data.roomCode;
     if (!roomCode) return;
     const room = rooms.get(roomCode);
-    if (!room) return;
+    if (!room || room.hostSocketId !== socket.id) return;
     room.currentGame = { gameIndex, gameName };
     io.to(roomCode).except(socket.id).emit("game_started", { gameIndex, gameName });
   });
@@ -243,15 +255,58 @@ io.on("connection", (socket) => {
     const roomCode = socket.data.roomCode;
     if (!roomCode) return;
     const room = rooms.get(roomCode);
-    if (!room) return;
+    if (!room || room.hostSocketId !== socket.id) return;
     room.currentGame = null;
     io.to(roomCode).emit("game_ended");
   });
 
   // ── HOST: Assign pong side to a player ───────────────────────────────────
   socket.on("assign_pong_side", ({ playerId, side }) => {
-    if (socket.data.isHost === false) return;
+    if (!socket.data.isHost || !rooms.get(socket.data.roomCode)?.players.has(playerId)) return;
     io.to(playerId).emit("pong_side", { side });
+  });
+
+  socket.on("slither_status", (payload) => {
+    const room = rooms.get(socket.data.roomCode);
+    if (!room || room.hostSocketId !== socket.id || !room.players.has(payload.playerId)) return;
+    io.to(payload.playerId).volatile.emit("slither_status", payload);
+  });
+
+  socket.on("polar_status", (payload) => {
+    const room = rooms.get(socket.data.roomCode);
+    if (!room || room.hostSocketId !== socket.id || !room.players.has(payload.playerId)) return;
+    io.to(payload.playerId).volatile.emit("polar_status", payload);
+  });
+
+  // ── CONTROLLER: PolarBash lobby actions (ready, bear class, stage) ──────
+  socket.on("polar_action", ({ roomCode, action }) => {
+    const room = rooms.get(roomCode);
+    if (!room || !room.players.has(socket.id) || socket.data.roomCode !== roomCode) return;
+    const valid = action && (action.kind === "ready"
+      || (action.kind === "class" && typeof action.value === "string")
+      || (action.kind === "stage" && (action.dir === 1 || action.dir === -1)));
+    if (!valid) return;
+    io.to(room.hostSocketId).emit("player_polar_action", { playerId: socket.id, action });
+  });
+
+  socket.on("worms_status", (payload) => {
+    const room = rooms.get(socket.data.roomCode);
+    if (!room || room.hostSocketId !== socket.id || !room.players.has(payload.playerId)) return;
+    io.to(payload.playerId).volatile.emit("worms_status", payload);
+  });
+
+  // ── CONTROLLER: WormBlitz input (held keys, weapon/fuse picks, lobby) ───
+  const WORMS_KEYS = ["left", "right", "up", "down", "fire", "jump", "backflip"];
+  socket.on("worms_input", ({ roomCode, action }) => {
+    const room = rooms.get(roomCode);
+    if (!room || !room.players.has(socket.id) || socket.data.roomCode !== roomCode || !action) return;
+    const valid = (action.kind === "key" && WORMS_KEYS.includes(action.key) && typeof action.down === "boolean")
+      || (action.kind === "weapon" && typeof action.id === "string" && action.id.length < 20)
+      || (action.kind === "fuse" && Number.isInteger(action.value) && action.value >= 1 && action.value <= 5)
+      || action.kind === "ready"
+      || (action.kind === "lobby" && ["theme", "worms", "time", "cpus"].includes(action.what) && (action.dir === 1 || action.dir === -1));
+    if (!valid) return;
+    io.to(room.hostSocketId).emit("player_worms_input", { playerId: socket.id, action });
   });
 
   // ── Disconnect handler ────────────────────────────────────────────────────
@@ -268,6 +323,10 @@ io.on("connection", (socket) => {
       // Host left — tear down the room and notify all players
       console.log(`[R] Host left room ${roomCode} — dissolving room.`);
       io.to(roomCode).emit("room_closed", { message: "The host disconnected. Room closed." });
+      for (const id of room.players.keys()) {
+        const playerSocket = io.sockets.sockets.get(id);
+        if (playerSocket) { playerSocket.leave(roomCode); delete playerSocket.data.roomCode; delete playerSocket.data.isHost; }
+      }
       rooms.delete(roomCode);
       return;
     }

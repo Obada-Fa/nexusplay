@@ -8,7 +8,16 @@ export interface Player {
 }
 
 // ─── Client → Server events ───────────────────────────────────────────────────
+export interface SlitherStatus {
+  playerId: string; phase: string; remaining: number; score: number; length: number; kills: number; dead: boolean; cooldown: number; boost: number;
+}
+
 export interface ClientToServerEvents {
+  worms_status: (payload: WormsStatus) => void;
+  worms_input: (payload: { roomCode: string; action: WormsAction }) => void;
+  slither_status: (payload: SlitherStatus) => void;
+  polar_status: (payload: PolarStatus) => void;
+  polar_action: (payload: { roomCode: string; action: PolarAction }) => void;
   host_create_room: (payload: { roomCode: string }) => void;
   player_join: (payload: { roomCode: string; playerName: string }) => void;
   
@@ -48,8 +57,13 @@ export interface ClientToServerEvents {
 
 // ─── Server → Client events ───────────────────────────────────────────────────
 export interface ServerToClientEvents {
+  worms_status: (payload: WormsStatus) => void;
+  player_worms_input: (payload: { playerId: string; action: WormsAction }) => void;
+  slither_status: (payload: SlitherStatus) => void;
+  polar_status: (payload: PolarStatus) => void;
+  player_polar_action: (payload: { playerId: string; action: PolarAction }) => void;
   room_created: (payload: { roomCode: string }) => void;
-  join_success: (payload: { player: Player; roomCode: string }) => void;
+  join_success: (payload: { player: Player; roomCode: string; gameName?: string }) => void;
   join_error: (payload: { message: string }) => void;
   player_joined: (payload: { player: Player; totalPlayers: number }) => void;
   player_left: (payload: { playerId: string; totalPlayers: number }) => void;
@@ -110,6 +124,11 @@ export interface SnakeState {
   isBoosting: boolean;
   score: number;
   isDead: boolean;
+  shield: number;
+  kills: number;
+  bank: number;
+  respawnAt: number;
+  boostTrail: number;
 }
 
 export interface FoodOrb {
@@ -167,37 +186,24 @@ export interface DashState {
   hueShift: number;
 }
 
-// ─── PolarBash (Crash Bash polar push clone) ────────────────────────────────
+// ─── PolarBash (Crash Bash "Polar Push" replica) ────────────────────────────
 
-export interface PolarBear {
-  slot: number;
-  playerId: string | null; // null = AI
-  name: string;
-  color: string;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  angle: number;
-  targetAngle: number;
-  isAlive: boolean;
-  isDashing: boolean;
-  dashCooldown: number;
-  dashTimer: number;
-  radius: number;
-  falls: number;
+export interface PolarStatus {
+  playerId: string; phase: string; stage: string; round: number; clock: number;
+  seated: boolean; slot: number; color: string; cls: string;
+  alive: boolean; stamina: number; power: boolean; wins: number; ready: boolean; countdown: number;
+  roundWinner: string | null; champion: string | null; isChampion: boolean; canRematch: boolean;
 }
 
-export interface PolarBashState {
-  bears: PolarBear[];
-  arenaCx: number;
-  arenaCy: number;
-  arenaRadius: number;
-  maxArenaRadius: number;
-  shrinkTimer: number;
-  roundActive: boolean;
-  winner: string | null;
-  initialized: boolean;
-  particles: DashParticle[];
-  snowParticles: DashParticle[];
-}
+export type PolarAction = { kind: "ready" } | { kind: "class"; value: string } | { kind: "stage"; dir: 1 | -1 };
+
+// ─── WormBlitz (turn-based artillery) ───────────────────────────────────────
+
+export type WormsStatus = import("@/lib/worms/engine").WormsStatusData;
+export type WormsKey = "left" | "right" | "up" | "down" | "fire" | "jump" | "backflip";
+export type WormsAction =
+  | { kind: "key"; key: WormsKey; down: boolean }
+  | { kind: "weapon"; id: string }
+  | { kind: "fuse"; value: number }
+  | { kind: "ready" }
+  | { kind: "lobby"; what: "theme" | "worms" | "time" | "cpus"; dir: 1 | -1 };
