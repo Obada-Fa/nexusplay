@@ -59,11 +59,20 @@ const io = new Server(httpServer, {
   },
 });
 
+function session(room) {
+  const controller = room.players.values().next().value;
+  return { ...room.session, gameName: room.currentGame?.gameName ?? "", controllerId: controller?.id ?? null, controllerName: controller?.name ?? "" };
+}
+function broadcast(room) { io.to(room.hostSocketId).emit("session_state", session(room)); for (const id of room.players.keys()) io.to(id).emit("session_state", session(room)); }
+function controls(room, socket) { return room && (room.hostSocketId === socket.id || (socket.data.roomCode && room.players.keys().next().value === socket.id)); }
+
 // ─── Connection handler ───────────────────────────────────────────────────────
 io.on("connection", (socket) => {
   console.log(`[+] Socket connected: ${socket.id}`);
   socket.use(([event, payload], next) => {
     if (event !== "game_ended" && (!payload || typeof payload !== "object")) return;
+    const room = rooms.get(socket.data.roomCode);
+    if (room?.session.paused && ["steer", "boost_start", "boost_end", "pong_move", "respawn_request", "dash_jump", "polar_action", "worms_input"].includes(event)) return;
     next();
   });
 
@@ -80,6 +89,7 @@ io.on("connection", (socket) => {
       hostSocketId: socket.id,
       players: new Map(),
       currentGame: null,
+      session: { galleryIndex: 0, paused: false, menuIndex: 0, confirm: null, revision: 0 },
     });
 
     socket.join(roomCode);
@@ -88,6 +98,7 @@ io.on("connection", (socket) => {
     console.log(`[R] Room created: ${roomCode} by host ${socket.id}`);
 
     socket.emit("room_created", { roomCode });
+    broadcast(rooms.get(roomCode));
   });
 
   // ── PLAYER: Joins a room ──────────────────────────────────────────────────
@@ -129,6 +140,8 @@ io.on("connection", (socket) => {
     // Confirm to the controller
     socket.emit("join_success", { player, roomCode, gameName: room.currentGame?.gameName ?? "" });
 
+    broadcast(room);
+
     // If a game is already active, tell the new player
     if (room.currentGame) {
       socket.emit("game_started", room.currentGame);
@@ -145,7 +158,7 @@ io.on("connection", (socket) => {
   socket.on("gallery_navigate", ({ roomCode, direction }) => {
     if (!roomCode) return;
     const room = rooms.get(roomCode);
-    if (!room || !room.players.has(socket.id) || socket.data.roomCode !== roomCode) return;
+    if (!controls(room, socket) || room.currentGame) return;
     io.to(room.hostSocketId).emit("gallery_navigate", {
       playerId: socket.id,
       direction,
@@ -155,20 +168,41 @@ io.on("connection", (socket) => {
   socket.on("gallery_select", ({ roomCode }) => {
     if (!roomCode) return;
     const room = rooms.get(roomCode);
-    if (!room || !room.players.has(socket.id) || socket.data.roomCode !== roomCode) return;
+    if (!controls(room, socket) || room.currentGame) return;
     io.to(room.hostSocketId).emit("gallery_select", {
       playerId: socket.id,
     });
   });
 
   socket.on("gallery_back", ({ roomCode }) => {
-    if (!roomCode) return;
     const room = rooms.get(roomCode);
-    if (!room || !room.players.has(socket.id)) return;
-    room.currentGame = null;
-    io.to(room.hostSocketId).emit("gallery_back", {
-      playerId: socket.id,
-    });
+    if (!controls(room, socket) || !room.currentGame) return;
+    room.session.paused = true; room.session.confirm = "lobby"; broadcast(room);
+  });
+  socket.on("host_gallery", ({ galleryIndex }) => {
+    const room = rooms.get(socket.data.roomCode);
+    if (!room || room.hostSocketId !== socket.id || !Number.isInteger(galleryIndex) || galleryIndex < 0 || galleryIndex > 4) return;
+    room.session.galleryIndex = galleryIndex; broadcast(room);
+  });
+  socket.on("remote_command", ({ roomCode, action }) => {
+    const room = rooms.get(roomCode);
+    if (!controls(room, socket) || !room.currentGame) return;
+    const s = room.session;
+    if (action === "menu") { s.paused = true; s.confirm = null; s.menuIndex = 0; }
+    else if (!s.paused) return;
+    else if (action === "cancel") s.confirm = null;
+    else if (action === "confirm" && s.confirm) {
+      const execute = s.confirm; s.confirm = null; s.paused = false;
+      io.to(room.hostSocketId).emit("remote_execute", { action: execute });
+    } else if (!s.confirm) {
+      if (action === "up" || action === "down") s.menuIndex = (s.menuIndex + (action === "up" ? 2 : 1)) % 3;
+      else {
+        const selected = action === "select" ? ["resume", "restart", "lobby"][s.menuIndex] : action;
+        if (selected === "resume") s.paused = false;
+        else if (selected === "restart" || selected === "lobby") s.confirm = selected;
+      }
+    }
+    broadcast(room);
   });
 
   // ── CONTROLLER: Sends movement angle ──────────────────────────────────────
@@ -247,6 +281,8 @@ io.on("connection", (socket) => {
     const room = rooms.get(roomCode);
     if (!room || room.hostSocketId !== socket.id) return;
     room.currentGame = { gameIndex, gameName };
+    room.session.paused = false; room.session.confirm = null; room.session.revision++;
+    broadcast(room);
     io.to(roomCode).except(socket.id).emit("game_started", { gameIndex, gameName });
   });
 
@@ -257,6 +293,8 @@ io.on("connection", (socket) => {
     const room = rooms.get(roomCode);
     if (!room || room.hostSocketId !== socket.id) return;
     room.currentGame = null;
+    room.session.paused = false; room.session.confirm = null; room.session.revision++;
+    broadcast(room);
     io.to(roomCode).emit("game_ended");
   });
 
@@ -335,6 +373,7 @@ io.on("connection", (socket) => {
     const player = room.players.get(socket.id);
     if (player) {
       room.players.delete(socket.id);
+      broadcast(room);
       console.log(`[P] ${player.name} left room ${roomCode}`);
 
       io.to(room.hostSocketId).emit("player_left", {

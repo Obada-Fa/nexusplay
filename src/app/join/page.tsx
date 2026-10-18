@@ -6,6 +6,9 @@ import { getSocket, destroySocket } from "@/lib/socket";
 import type { Player, SlitherStatus, PolarStatus, WormsStatus, WormsAction, WormsKey } from "@/types/socket";
 import { WEAPONS as WORM_WEAPONS, WEAPON as WORM_WEAPON } from "@/lib/worms/weapons";
 import { CLASSES as POLAR_CLASSES, STAGES as POLAR_STAGES, RULES as POLAR_RULES } from "@/lib/polar/engine";
+import Link from "next/link";
+import { SessionMenu } from "@/components/session-menu";
+import type { SessionState, RemoteCommand } from "@/types/socket";
 import { Suspense } from "react";
 
 // ─── Remote Control (Gallery browsing) ───────────────────────────────────────
@@ -590,13 +593,13 @@ function WormsController({ player, roomCode, status }: { player: Player; roomCod
 }
 
 // ─── Controller Router ──────────────────────────────────────────────────────
-function Controller({ player, roomCode, initialGame }: { player: Player; roomCode: string; initialGame: string }) {
+function Controller({ player, roomCode, initialGame, initialSide }: { player: Player; roomCode: string; initialGame: string; initialSide: "left" | "right" | null }) {
   const [dead, setDead] = useState(false);
   const [finalScore, setFinalScore] = useState(0);
   const [gameActive, setGameActive] = useState(Boolean(initialGame));
   const [gameName, setGameName] = useState(initialGame);
   const [snakeStatus, setSnakeStatus] = useState<SlitherStatus | null>(null);
-  const [pongSide, setPongSide] = useState<"left" | "right" | null>(null);
+  const pongSide = initialSide;
   const [polarStatus, setPolarStatus] = useState<PolarStatus | null>(null);
   const [wormsStatus, setWormsStatus] = useState<WormsStatus | null>(null);
 
@@ -608,7 +611,7 @@ function Controller({ player, roomCode, initialGame }: { player: Player; roomCod
       setDead(false);
       setFinalScore(0);
       setGameName(gn);
-      setPongSide(null);
+
     };
 
     const onDied = ({ score }: { score: number }) => {
@@ -616,15 +619,11 @@ function Controller({ player, roomCode, initialGame }: { player: Player; roomCod
       setDead(true);
     };
 
-    const onPongSide = ({ side }: { side: "left" | "right" }) => {
-      setPongSide(side);
-    };
-
     const onGameEnded = () => {
       setGameActive(false);
       setDead(false);
       setFinalScore(0);
-      setPongSide(null);
+
     };
 
     const onSnakeStatus = (data: SlitherStatus) => {
@@ -635,7 +634,7 @@ function Controller({ player, roomCode, initialGame }: { player: Player; roomCod
     socket.on("worms_status", setWormsStatus);
     socket.on("game_started", onGameStarted);
     socket.on("player_died", onDied);
-    socket.on("pong_side", onPongSide);
+
     socket.on("game_ended", onGameEnded);
 
     return () => {
@@ -644,7 +643,7 @@ function Controller({ player, roomCode, initialGame }: { player: Player; roomCod
       socket.off("worms_status", setWormsStatus);
       socket.off("game_started", onGameStarted);
       socket.off("player_died", onDied);
-      socket.off("pong_side", onPongSide);
+
       socket.off("game_ended", onGameEnded);
     };
   }, []);
@@ -656,10 +655,6 @@ function Controller({ player, roomCode, initialGame }: { player: Player; roomCod
 
   const handleBackToGallery = () => {
     getSocket().emit("gallery_back", { roomCode });
-    setGameActive(false);
-    setDead(false);
-    setFinalScore(0);
-    setPongSide(null);
   };
 
   // ── Game over screen (snake only) ──────────────────────────────────────
@@ -782,6 +777,10 @@ function JoinForm() {
   const [joinedPlayer, setJoinedPlayer] = useState<Player | null>(null);
   const [joinedRoom, setJoinedRoom] = useState<string>("");
   const [initialGame, setInitialGame] = useState("");
+  const [session, setSession] = useState<SessionState | null>(null);
+  const [side, setSide] = useState<"left" | "right" | null>(null);
+  const revisionRef = useRef(-1);
+  const reconnectRef = useRef<{ roomCode: string; playerName: string } | null>(null);
 
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
   const digits = [...code.split("").slice(0, 4)];
@@ -791,26 +790,40 @@ function JoinForm() {
     const socket = getSocket();
     socket.connect();
 
-    socket.on("connect", () => setConnStatus("connected"));
+    socket.on("session_state", state => {
+      if (revisionRef.current !== state.revision) setSide(null);
+      revisionRef.current = state.revision;
+      setSession(state);
+    });
+    socket.on("pong_side", ({ side }) => setSide(side));
+    socket.on("connect", () => {
+      setConnStatus("connected");
+      if (reconnectRef.current) socket.emit("player_join", reconnectRef.current);
+    });
     socket.on("connect_error", () => setConnStatus("error"));
     socket.on("disconnect", () => {
-      setConnStatus("connecting"); setJoinedPlayer(null); setJoining(false);
-      setError("Connection lost. Rejoin when you are back online.");
+      socket.sendBuffer = [];
+      setConnStatus("connecting"); setJoining(false);
+      setError("Connection lost. Reconnecting…");
     });
 
     socket.on("join_success", ({ player, roomCode: rc, gameName }) => {
       setInitialGame(gameName ?? "");
+      reconnectRef.current = { roomCode: rc, playerName: player.name };
+      setError("");
       setJoining(false);
       setJoinedPlayer(player);
       setJoinedRoom(rc);
     });
 
     socket.on("join_error", ({ message }) => {
+      setJoinedPlayer(null); reconnectRef.current = null;
       setJoining(false);
       setError(message);
     });
 
     socket.on("room_closed", () => {
+      reconnectRef.current = null; setSession(null);
       setJoinedPlayer(null);
       setError("The host closed the room.");
     });
@@ -819,6 +832,8 @@ function JoinForm() {
       socket.off("connect");
       socket.off("connect_error");
       socket.off("disconnect");
+      socket.off("session_state");
+      socket.off("pong_side");
       socket.off("join_success");
       socket.off("join_error");
       socket.off("room_closed");
@@ -854,7 +869,18 @@ function JoinForm() {
   };
 
   if (joinedPlayer) {
-    return <Controller player={joinedPlayer} roomCode={joinedRoom} initialGame={initialGame} />;
+    const main = session?.controllerId === joinedPlayer.id;
+    const connected = connStatus === "connected";
+    const command = (action: RemoteCommand) => { if (connected && main) getSocket().emit("remote_command", { roomCode: joinedRoom, action }); };
+    return <div className="remote-shell">
+      <div className="remote-toolbar"><span>{!connected ? "Reconnecting…" : main ? "Main remote" : `${session?.controllerName || "First player"} controls the screen`}</span><span>Room {joinedRoom}</span>
+        {session?.gameName && <button disabled={!main || !connected} onClick={() => command("menu")}>☰ Menu</button>}
+      </div>
+      <div className="remote-content" inert={!connected || Boolean(session?.paused) || (!main && !session?.gameName)}>
+        <Controller key={`${joinedPlayer.id}:${session?.revision ?? 0}`} player={joinedPlayer} roomCode={joinedRoom} initialGame={session?.gameName ?? initialGame} initialSide={side} />
+      </div>
+      {session && <SessionMenu state={session} enabled={Boolean(main && connected)} command={command} />}
+    </div>;
   }
 
   const statusConfig: Record<ConnStatus, { dot: string; label: string; ring: string }> = {
@@ -867,6 +893,7 @@ function JoinForm() {
   return (
     <main className="min-h-screen flex flex-col items-center justify-center px-6 py-12 bg-[#06060e]">
       <div className="mb-8 text-center">
+      <Link href="/host" className="absolute top-4 right-4 text-xs text-white/60 z-10">Use as host</Link>
         <p className="text-5xl mb-4 drop-shadow-[0_0_20px_rgba(139,92,246,0.3)]">🎮</p>
         <h1 className="text-3xl font-black tracking-tight bg-gradient-to-r from-violet-400 to-cyan-400 bg-clip-text text-transparent">
           NexusPlay

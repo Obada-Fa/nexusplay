@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import Link from "next/link";
+import { SessionMenu } from "@/components/session-menu";
+import type { SessionState, RemoteCommand, Player } from "@/types/socket";
 import QRCode from "qrcode";
 import { getSocket, destroySocket } from "@/lib/socket";
 import type { SnakeState, GameInfo, PongState, PaddleDir, DashState, DashObstacle } from "@/types/socket";
@@ -116,6 +119,12 @@ export default function HostPage() {
   const [playerCount, setPlayerCount] = useState(0);
   const galleryIndexRef = useRef(0);
   const [activeGame, setActiveGame] = useState<string | null>(null);
+  const [session, setSession] = useState<SessionState | null>(null);
+  const pausedRef = useRef(false);
+  const [gameEpoch, setGameEpoch] = useState(0);
+  const playersRef = useRef(new Map<string, Player>());
+  const executeRef = useRef<(action: "restart" | "lobby") => void>(() => {});
+  const command = (action: RemoteCommand) => getSocket().emit("remote_command", { roomCode, action });
   const activeGameRef = useRef<string | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -174,7 +183,10 @@ export default function HostPage() {
           // Fallback
         }
       }
-      const url = `http://${host}:${window.location.port || 3000}/join?code=${roomCode}`;
+      const target = new URL("/join", window.location.origin);
+      target.hostname = host;
+      target.searchParams.set("code", roomCode);
+      const url = target.toString();
       setJoinUrl(url);
       QRCode.toDataURL(url, {
         width: 200,
@@ -205,6 +217,7 @@ export default function HostPage() {
     });
 
     socket.on("player_joined", ({ player }) => {
+      playersRef.current.set(player.id, player);
       const newSnake = createSnake(player);
       snakesRef.current.set(player.id, newSnake);
       slitherRef.current?.spawn(newSnake);
@@ -228,6 +241,8 @@ export default function HostPage() {
     });
 
     socket.on("player_left", ({ playerId }) => {
+      playersRef.current.delete(playerId);
+      pongInputRef.current.delete(playerId);
       snakesRef.current.delete(playerId);
       setPlayerCount(snakesRef.current.size);
       const state = pongStateRef.current;
@@ -240,11 +255,14 @@ export default function HostPage() {
         state.rightPlayerName = "AI";
       }
       polarRef.current?.removePlayer(playerId);
-      wormsRef.current?.removePlayer(playerId);
+      const worms = wormsRef.current;
+      if (worms?.teams[worms.current]?.playerId === playerId) { worms.charging = false; worms.power = 0; worms.jetOn = false; wormsAudioRef.current?.stopCharge(); }
+      worms?.removePlayer(playerId);
     });
 
     // ── Gallery navigation ────────────────────────────────────────────────
     socket.on("gallery_navigate", ({ direction }) => {
+      if (activeGameRef.current) return;
       setGalleryIndex((prev) => {
         const next = direction === "left"
           ? (prev - 1 + GAMES.length) % GAMES.length
@@ -254,34 +272,28 @@ export default function HostPage() {
     });
 
     socket.on("gallery_select", () => {
+      if (activeGameRef.current) return;
       const idx = galleryIndexRef.current;
       setActiveGame(GAMES[idx].id);
       socket.emit("game_started", { gameIndex: idx, gameName: GAMES[idx].name });
     });
 
-    socket.on("gallery_back", () => {
-      setActiveGame(null);
-      // Keep connected players when returning to the gallery.
-      slitherRef.current = null;
-      pongInputRef.current.clear();
-      pongInitializedRef.current = false;
-      const state = pongStateRef.current;
-      state.leftScore = 0;
-      state.rightScore = 0;
-      state.leftPlayerId = null;
-      state.rightPlayerId = null;
-      state.leftPlayerName = "Player 1";
-      state.rightPlayerName = "AI";
-      const ds = dashStateRef.current;
-      ds.running = false;
-      ds.obstacles = [];
-      ds.particles = [];
-      ds.score = 0;
-      dashInitializedRef.current = false;
-      polarRef.current = null;
-      wormsRef.current = null;
-      socket.emit("game_ended", { roomCode });
+    socket.on("session_state", (state) => {
+      pausedRef.current = state.paused;
+      if (state.paused) {
+        pongInputRef.current.clear();
+        for (const snake of snakesRef.current.values()) snake.isBoosting = false;
+        for (const id of playersRef.current.keys()) polarRef.current?.steer(id, null);
+        const worms = wormsRef.current;
+        if (worms) {
+          for (const team of worms.teams) team.keys.clear();
+          worms.charging = false; worms.power = 0; worms.jetOn = false;
+          wormsAudioRef.current?.stopCharge();
+        }
+      }
+      setSession(state);
     });
+    socket.on("remote_execute", ({ action }) => executeRef.current(action));
 
     // ── Gameplay events ───────────────────────────────────────────────────
     socket.on("player_steer", ({ playerId, angle }) => {
@@ -385,7 +397,7 @@ export default function HostPage() {
 
     socket.on("disconnect", () => {
       setStatus("connecting"); setActiveGame(null);
-      snakesRef.current.clear(); setPlayerCount(0);
+      snakesRef.current.clear(); playersRef.current.clear(); setPlayerCount(0); pausedRef.current = false; setSession(null);
     });
 
     socket.on("room_closed", () => {
@@ -401,7 +413,8 @@ export default function HostPage() {
       socket.off("player_left");
       socket.off("gallery_navigate");
       socket.off("gallery_select");
-      socket.off("gallery_back");
+      socket.off("session_state");
+      socket.off("remote_execute");
       socket.off("player_steer");
       socket.off("player_boost_start");
       socket.off("player_boost_end");
@@ -417,6 +430,7 @@ export default function HostPage() {
 
   // Fixed 60 Hz simulation; capped catch-up avoids tab-resume jumps.
   const gameLoop = useCallback((timestamp: number) => {
+    if (pausedRef.current) { lastTimeRef.current = 0; accumulatorRef.current = 0; animFrameRef.current = requestAnimationFrame(t => snakeLoopRef.current?.(t)); return; }
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
     const game = slitherRef.current;
@@ -457,10 +471,11 @@ export default function HostPage() {
     };
     document.addEventListener("visibilitychange", visibility);
     return () => { cancelAnimationFrame(animFrameRef.current); document.removeEventListener("visibilitychange", visibility); slitherRef.current = null; };
-  }, [activeGame, gameLoop]);
+  }, [activeGame, gameLoop, gameEpoch]);
 
 // ─── Pong Game Loop ────────────────────────────────────────────────────────
 const pongGameLoop = useCallback(() => {
+  if (pausedRef.current) { animFrameRef.current = requestAnimationFrame(() => pongLoopRef.current?.()); return; }
   const canvas = canvasRef.current;
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
@@ -650,6 +665,7 @@ const pongGameLoop = useCallback(() => {
 
 // ─── DashZone Game Loop ────────────────────────────────────────────────────
 const dashGameLoop = useCallback(() => {
+  if (pausedRef.current) { animFrameRef.current = requestAnimationFrame(() => dashLoopRef.current?.()); return; }
   // game-loop mutation pattern — intentional
   const canvas = canvasRef.current;
   if (!canvas) return;
@@ -907,7 +923,7 @@ useEffect(() => {
     animFrameRef.current = requestAnimationFrame(pongGameLoop);
     return () => cancelAnimationFrame(animFrameRef.current);
   }
-  }, [activeGame, pongGameLoop, roomCode]);
+  }, [activeGame, pongGameLoop, roomCode, gameEpoch]);
 
   useEffect(() => {
     if (activeGame === "dash") {
@@ -924,7 +940,7 @@ useEffect(() => {
       animFrameRef.current = requestAnimationFrame(dashGameLoop);
       return () => cancelAnimationFrame(animFrameRef.current);
     }
-  }, [activeGame, dashGameLoop]);
+  }, [activeGame, dashGameLoop, gameEpoch]);
 
   // ─── PolarBash: fixed 60 Hz sim, HUD + phone telemetry at 10 Hz ────────────
   useEffect(() => {
@@ -934,6 +950,7 @@ useEffect(() => {
     polarRef.current = game;
     let last = 0, acc = 0, hudAt = 0;
     const frame = (ts: number) => {
+      if (pausedRef.current) { last = 0; acc = 0; animFrameRef.current = requestAnimationFrame(frame); return; }
       const canvas = canvasRef.current, ctx = canvas?.getContext("2d");
       if (canvas && ctx && polarRef.current === game) {
         acc += last ? Math.min((ts - last) / 1000, 0.1) : 0;
@@ -960,11 +977,12 @@ useEffect(() => {
       if (polarRef.current === game) polarRef.current = null;
       setPolarHud(null);
     };
-  }, [activeGame]);
+  }, [activeGame, gameEpoch]);
 
   useEffect(() => {
     if (activeGame !== "polarbash") return;
     const onKey = (e: KeyboardEvent) => {
+      if (pausedRef.current) return;
       const g = polarRef.current;
       if (!g) return;
       if (e.key === "ArrowLeft") g.setStage(g.stage - 1);
@@ -988,6 +1006,7 @@ useEffect(() => {
     wormsAudioRef.current = audio;
     let last = 0, acc = 0, hudAt = 0, raf = 0;
     const frame = (ts: number) => {
+      if (pausedRef.current) { last = 0; acc = 0; raf = requestAnimationFrame(frame); animFrameRef.current = raf; return; }
       const canvas = canvasRef.current, ctx = canvas?.getContext("2d");
       if (canvas && ctx && wormsRef.current === game) {
         acc += last ? Math.min((ts - last) / 1000, 0.1) : 0;
@@ -1016,6 +1035,7 @@ useEffect(() => {
     animFrameRef.current = raf;
     const unlock = () => audio.unlock();
     const onKey = (e: KeyboardEvent) => {
+      if (pausedRef.current) return;
       audio.unlock();
       const down = e.type === "keydown", k = e.key;
       if (k in WORMS_KEYMAP || k === "Tab") e.preventDefault();
@@ -1062,7 +1082,7 @@ useEffect(() => {
       wormsAudioRef.current = null;
       setWormsHud(null);
     };
-  }, [activeGame]);
+  }, [activeGame, gameEpoch]);
 
   // ─── Canvas resize ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -1105,36 +1125,48 @@ useEffect(() => {
     setTimeout(() => setCopyFeedback(false), 2000);
   };
 
-  const handleGalleryBack = () => {
-    setActiveGame(null);
-    slitherRef.current = null;
-    pongInputRef.current.clear();
-    pongInitializedRef.current = false;
-    const state = pongStateRef.current;
-    state.leftScore = 0;
-    state.rightScore = 0;
-    state.leftPlayerId = null;
-    state.rightPlayerId = null;
-    state.leftPlayerName = "Player 1";
-    state.rightPlayerName = "AI";
-    const ds = dashStateRef.current;
-    ds.running = false;
-    ds.obstacles = [];
-    ds.particles = [];
-    ds.score = 0;
-    dashInitializedRef.current = false;
-    polarRef.current = null;
-    wormsRef.current = null;
-    setPlayerCount(snakesRef.current.size);
-    getSocket().emit("game_ended", { roomCode });
-  };
+  const handleGalleryBack = () => command("menu");
+
+  useEffect(() => {
+    executeRef.current = action => {
+      if (action === "lobby") {
+        pausedRef.current = false;
+        setActiveGame(null); activeGameRef.current = null;
+        pongInputRef.current.clear();
+        getSocket().emit("game_ended", { roomCode });
+      } else {
+        const idx = GAMES.findIndex(g => g.id === activeGameRef.current);
+        if (idx < 0) return;
+        // Keep room membership separate from game entities across fresh rounds.
+        snakesRef.current = new Map([...playersRef.current].map(([id, player]) => [id, createSnake(player)]));
+        setGameEpoch(epoch => epoch + 1);
+        getSocket().emit("game_started", { gameIndex: idx, gameName: GAMES[idx].name });
+      }
+    };
+  }, [roomCode]);
+
+  useEffect(() => {
+    if (status === "ready") getSocket().emit("host_gallery", { galleryIndex });
+  }, [galleryIndex, status]);
+
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (!activeGame) return;
+      const action = e.key === "Escape" ? (session?.paused ? (session.confirm ? "cancel" : "resume") : "menu")
+        : session?.paused && !session.confirm ? ({ ArrowUp: "up", ArrowDown: "down", Enter: "select" } as const)[e.key as "ArrowUp"] : undefined;
+      if (action) { e.preventDefault(); getSocket().emit("remote_command", { roomCode, action }); }
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [activeGame, session, roomCode]);
 
   return (
     <main className="h-screen bg-[#06060e] text-white flex flex-col font-sans overflow-hidden">
+      {session && <SessionMenu state={session} enabled command={command} />}
       {/* ── Console status bar ─────────────────────────────────────────── */}
       <header className="flex items-center justify-between px-6 py-3 border-b border-white/[0.06] bg-[#0a0a18] shrink-0">
         <div className="flex items-center gap-4">
-          <span className="text-lg">🎮</span>
+          <span className="text-lg">🎮</span><Link className="text-xs text-white/60" href="/join">Use as controller</Link>
           <span className="text-sm font-bold tracking-wide bg-gradient-to-r from-violet-400 to-cyan-400 bg-clip-text text-transparent uppercase">
             NexusPlay
           </span>
@@ -1175,7 +1207,7 @@ useEffect(() => {
 
       {/* ── Game active: full canvas ──────────────────────────────────── */}
       {activeGame ? (
-        <div className="flex-1 relative bg-black">
+        <div className="flex-1 relative bg-black" inert={Boolean(session?.paused)}>
           {/* CRT frame */}
           <div className="absolute inset-4 z-10 pointer-events-none rounded-2xl ring-1 ring-white/[0.06] shadow-[inset_0_0_100px_rgba(0,0,0,0.4)]" />
 
@@ -1195,7 +1227,7 @@ useEffect(() => {
                 onClick={handleGalleryBack}
                 className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-black/60 backdrop-blur-md border border-white/10 text-white/50 hover:text-white hover:border-white/30 hover:bg-black/80 transition-all text-xs font-bold uppercase tracking-wider"
               >
-                ← Home
+                ☰ Menu
               </button>
             </div>
             <div className={activeGame === "snake" || activeGame === "polarbash" || activeGame === "worms" ? "hidden" : "flex flex-col items-end gap-2"}>
@@ -1309,7 +1341,7 @@ useEffect(() => {
               SELECT GAME
             </h2>
             <p className="text-white/20 text-xs mt-2 font-mono tracking-wider">
-              ← → BROWSE &nbsp; ENTER START &nbsp; PHONE REMOTE
+              Use your phone remote to browse and start · Keyboard: ← → Enter
             </p>
           </div>
 
@@ -1385,10 +1417,10 @@ useEffect(() => {
             <div className="w-px h-10 bg-white/[0.06]" />
             {qrDataUrl ? (
               <div className="rounded-lg overflow-hidden border border-white/[0.06] bg-white p-0.5">
-                <img src={qrDataUrl} alt={`QR ${roomCode}`} className="w-24 h-24" />
+                <img src={qrDataUrl} alt={`QR ${roomCode}`} className="w-36 h-36" />
               </div>
             ) : (
-              <div className="w-24 h-24 rounded-lg bg-white/[0.03] animate-pulse" />
+              <div className="w-36 h-36 rounded-lg bg-white/[0.03] animate-pulse" />
             )}
             <div className="w-px h-10 bg-white/[0.06]" />
             <div className="flex flex-col gap-2">

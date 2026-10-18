@@ -7,12 +7,26 @@ export interface Player {
   joinedAt: number;
 }
 
+export type RemoteCommand = "menu" | "resume" | "restart" | "lobby" | "up" | "down" | "select" | "confirm" | "cancel";
+export interface SessionState {
+  controllerId: string | null;
+  controllerName: string;
+  gameName: string;
+  galleryIndex: number;
+  paused: boolean;
+  menuIndex: number;
+  confirm: "restart" | "lobby" | null;
+  revision: number;
+}
+
 // ─── Client → Server events ───────────────────────────────────────────────────
 export interface SlitherStatus {
   playerId: string; phase: string; remaining: number; score: number; length: number; kills: number; dead: boolean; cooldown: number; boost: number;
 }
 
 export interface ClientToServerEvents {
+  remote_command: (payload: { roomCode: string; action: RemoteCommand }) => void;
+  host_gallery: (payload: { galleryIndex: number }) => void;
   worms_status: (payload: WormsStatus) => void;
   worms_input: (payload: { roomCode: string; action: WormsAction }) => void;
   slither_status: (payload: SlitherStatus) => void;
@@ -57,6 +71,8 @@ export interface ClientToServerEvents {
 
 // ─── Server → Client events ───────────────────────────────────────────────────
 export interface ServerToClientEvents {
+  session_state: (payload: SessionState) => void;
+  remote_execute: (payload: { action: "restart" | "lobby" }) => void;
   worms_status: (payload: WormsStatus) => void;
   player_worms_input: (payload: { playerId: string; action: WormsAction }) => void;
   slither_status: (payload: SlitherStatus) => void;
