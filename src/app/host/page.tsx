@@ -1,9 +1,22 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import Link from "next/link";
+import { SessionMenu } from "@/components/session-menu";
+import type { SessionState, RemoteCommand, Player } from "@/types/socket";
 import QRCode from "qrcode";
 import { getSocket, destroySocket } from "@/lib/socket";
-import type { SnakeState, Point, FoodOrb, GameInfo, PongState, PaddleDir, DashState, DashObstacle, PolarBashState, PolarBear } from "@/types/socket";
+import type { SnakeState, GameInfo, PongState, PaddleDir, DashState, DashObstacle } from "@/types/socket";
+
+import { createSnake, SlitherEngine } from "@/lib/slither/engine";
+import { renderSlither } from "@/lib/slither/render";
+import { PolarEngine, STAGES, CLASSES, RULES as POLAR_RULES } from "@/lib/polar/engine";
+import { renderPolar } from "@/lib/polar/render";
+import { WormsEngine, RULES as WORMS_RULES, type Key as WormsKey, type WormsSnapshot } from "@/lib/worms/engine";
+import { WormsRenderer } from "@/lib/worms/render";
+import { WormsAudio } from "@/lib/worms/audio";
+import { THEMES as WORMS_THEMES } from "@/lib/worms/terrain";
+import { WEAPONS, WEAPON } from "@/lib/worms/weapons";
 
 // ─── Game Registry ──────────────────────────────────────────────────────────
 const GAMES: GameInfo[] = [
@@ -11,7 +24,7 @@ const GAMES: GameInfo[] = [
     id: "snake",
     name: "SlitherPlay",
     icon: "🐍",
-    description: "Eat orbs, grow longer, don't crash. Classic snake multiplayer.",
+    description: "A neon snake showdown. Collect, cut off, boost. 2–4 is the sweet spot. Up to 8 players.",
     color: "#8b5cf6",
   },
   {
@@ -35,20 +48,21 @@ const GAMES: GameInfo[] = [
     description: "Ram polar bears off shrinking ice. Last bear standing wins.",
     color: "#38bdf8",
   },
+  {
+    id: "worms",
+    name: "WormBlitz",
+    icon: "🪱",
+    description: "Turn-based artillery war. Destructible worlds, 15 weapons, up to 4 teams.",
+    color: "#f472b6",
+  },
 ];
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-const BASE_SPEED = 1.25;
-const BOOST_SPEED = 5.0;
-const TURN_SPEED = 0.12;
-const SNAKE_RADIUS = 12;
-const SEGMENT_SPACING = 6;
-const FOOD_RADIUS = 5;
-const INITIAL_LENGTH = 8;
-const FOOD_VALUE = 5;
-const MAX_FOOD = 150;
-const ARENA_BG = "#0d0d1a";
+// Host keyboard → WormBlitz keyboard team.
+const WORMS_KEYMAP: Record<string, WormsKey> = {
+  ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down", " ": "fire", Enter: "jump", Backspace: "backflip",
+};
 
+// ─── Constants ────────────────────────────────────────────────────────────────
 // ─── Pong Constants ──────────────────────────────────────────────────────────
 const PADDLE_WIDTH = 14;
 const PADDLE_HEIGHT = 90;
@@ -68,199 +82,32 @@ const DASH_OBSTACLE_MAX_GAP = 420;
 const DASH_GROUND_PCT = 0.25;
 const DASH_COLORS = ["#ef4444", "#f59e0b", "#10b981", "#3b82f6", "#8b5cf6", "#ec4899"];
 
-// ─── PolarBash Constants ────────────────────────────────────────────────────
-const POLAR_BEAR_RADIUS = 26;
-const POLAR_ARENA_FRAC = 0.42;
-const POLAR_ACCEL = 0.18;
-const POLAR_MAX_SPEED = 1.8;
-const POLAR_FRICTION = 0.94;
-const POLAR_DASH_SPEED = 6;
-const POLAR_DASH_DURATION = 14;
-const POLAR_DASH_COOLDOWN = 80;
-const POLAR_SHRINK_DELAY = 720;
-const POLAR_SHRINK_RATE = 0.06;
-const POLAR_PUSH_FORCE = 1.6;
-const POLAR_BEAR_COLORS = ["#38bdf8", "#f472b6", "#a3e635", "#fb923c"];
-const POLAR_RX_SCALE = 1.35;
-const POLAR_RY_SCALE = 0.82;
-const POLAR_ICE_DEPTH = 22;
+type PolarHud = {
+  phase: string; stage: number; round: number; clock: number; timer: number; suddenDeath: boolean;
+  bears: { slot: number; name: string; color: string; cls: string; wins: number; stamina: number; alive: boolean; cpu: boolean; ready: boolean; power: boolean; knocks: number }[];
+  roundWinner: number | null; champion: number | null; feed: { text: string; color: string }[]; canRematch: boolean; humans: number;
+};
+
+function polarSnapshot(g: PolarEngine): PolarHud {
+  return {
+    phase: g.phase, stage: g.stage, round: g.round, clock: Math.ceil(g.clock), timer: Math.ceil(g.timer), suddenDeath: g.suddenDeath,
+    bears: g.bears.map(b => ({ slot: b.slot, name: b.name, color: b.color, cls: b.cls, wins: b.wins, stamina: Math.round(b.stamina), alive: b.alive, cpu: !b.playerId, ready: b.ready, power: b.power > 0, knocks: b.knocks })),
+    roundWinner: g.roundWinner, champion: g.champion, feed: g.feed.map(f => ({ text: f.text, color: f.color })),
+    canRematch: g.phase === "matchover" && g.timer <= 0, humans: g.humans().length,
+  };
+}
 
 function generateRoomCode(): string {
   return String(Math.floor(1000 + Math.random() * 9000));
 }
 
-function generateId(): string {
-  return Math.random().toString(36).substring(2, 9);
-}
-
-function angleDiff(a: number, b: number): number {
-  const diff = ((b - a + Math.PI) % (2 * Math.PI)) - Math.PI;
-  return diff < -Math.PI ? diff + 2 * Math.PI : diff;
-}
-
-function distSq(p1: Point, p2: Point): number {
-  return (p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2;
-}
-
-function polarResetRound(state: PolarBashState) {
-  state.roundActive = true;
-  state.winner = null;
-  state.shrinkTimer = 0;
-  state.arenaRadius = state.maxArenaRadius;
-  state.particles = [];
-  const n = state.bears.length;
-  const rx = state.arenaRadius * POLAR_RX_SCALE;
-  const ry = state.arenaRadius * POLAR_RY_SCALE;
-  state.bears.forEach((bear, i) => {
-    const a = (i / n) * Math.PI * 2 - Math.PI / 2;
-    bear.x = state.arenaCx + Math.cos(a) * rx * 0.55;
-    bear.y = state.arenaCy + Math.sin(a) * ry * 0.55;
-    bear.vx = 0;
-    bear.vy = 0;
-    bear.angle = a + Math.PI;
-    bear.targetAngle = bear.angle;
-    bear.isAlive = true;
-    bear.isDashing = false;
-    bear.dashCooldown = 0;
-    bear.dashTimer = 0;
-  });
-}
-
-function polarStepPhysics(state: PolarBashState, inputs: Map<string, number>) {
-  if (!state.roundActive) return;
-
-  state.shrinkTimer++;
-  if (state.shrinkTimer > POLAR_SHRINK_DELAY && state.arenaRadius > 60) {
-    state.arenaRadius -= POLAR_SHRINK_RATE;
-  }
-
-  for (const bear of state.bears) {
-    if (!bear.isAlive) continue;
-
-    if (bear.playerId && inputs.has(bear.playerId)) {
-      bear.targetAngle = inputs.get(bear.playerId)!;
-    } else {
-      const dx = state.arenaCx - bear.x;
-      const dy = state.arenaCy - bear.y;
-      const erx = state.arenaRadius * POLAR_RX_SCALE * 0.7;
-      const ery = state.arenaRadius * POLAR_RY_SCALE * 0.7;
-      const ellipseDist = (dx * dx) / (erx * erx) + (dy * dy) / (ery * ery);
-      if (ellipseDist > 1) {
-        bear.targetAngle = Math.atan2(dy, dx);
-      } else {
-        let nearest: PolarBear | null = null;
-        let bestD = Infinity;
-        for (const o of state.bears) {
-          if (o === bear || !o.isAlive) continue;
-          const d = (o.x - bear.x) ** 2 + (o.y - bear.y) ** 2;
-          if (d < bestD) { bestD = d; nearest = o; }
-        }
-        if (nearest) {
-          bear.targetAngle = Math.atan2(nearest.y - bear.y, nearest.x - bear.x);
-        }
-      }
-      if (bear.dashCooldown <= 0 && !bear.isDashing && Math.random() < 0.01) {
-        bear.isDashing = true;
-        bear.dashTimer = POLAR_DASH_DURATION;
-        bear.dashCooldown = POLAR_DASH_COOLDOWN;
-        bear.vx = Math.cos(bear.angle) * POLAR_DASH_SPEED;
-        bear.vy = Math.sin(bear.angle) * POLAR_DASH_SPEED;
-      }
-    }
-
-    let diff = bear.targetAngle - bear.angle;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    bear.angle += Math.sign(diff) * Math.min(Math.abs(diff), 0.12);
-
-    if (bear.isDashing) {
-      bear.dashTimer--;
-      if (bear.dashTimer <= 0) bear.isDashing = false;
-    } else {
-      bear.vx += Math.cos(bear.angle) * POLAR_ACCEL;
-      bear.vy += Math.sin(bear.angle) * POLAR_ACCEL;
-      const speed = Math.sqrt(bear.vx * bear.vx + bear.vy * bear.vy);
-      if (speed > POLAR_MAX_SPEED) {
-        bear.vx = (bear.vx / speed) * POLAR_MAX_SPEED;
-        bear.vy = (bear.vy / speed) * POLAR_MAX_SPEED;
-      }
-      bear.vx *= POLAR_FRICTION;
-      bear.vy *= POLAR_FRICTION;
-    }
-    if (bear.dashCooldown > 0) bear.dashCooldown--;
-  }
-
-  for (const bear of state.bears) {
-    if (!bear.isAlive) continue;
-    bear.x += bear.vx;
-    bear.y += bear.vy;
-  }
-
-  for (let i = 0; i < state.bears.length; i++) {
-    const a = state.bears[i];
-    if (!a.isAlive) continue;
-    for (let j = i + 1; j < state.bears.length; j++) {
-      const b = state.bears[j];
-      if (!b.isAlive) continue;
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      const minDist = a.radius + b.radius;
-      if (dist < minDist && dist > 0) {
-        const overlap = minDist - dist;
-        const nx = dx / dist;
-        const ny = dy / dist;
-        a.x -= nx * overlap * 0.5;
-        a.y -= ny * overlap * 0.5;
-        b.x += nx * overlap * 0.5;
-        b.y += ny * overlap * 0.5;
-        const aForce = a.isDashing ? POLAR_PUSH_FORCE * 2.5 : POLAR_PUSH_FORCE;
-        const bForce = b.isDashing ? POLAR_PUSH_FORCE * 2.5 : POLAR_PUSH_FORCE;
-        a.vx -= nx * bForce;
-        a.vy -= ny * bForce;
-        b.vx += nx * aForce;
-        b.vy += ny * aForce;
-        for (let k = 0; k < 5; k++) {
-          state.particles.push({
-            x: (a.x + b.x) / 2, y: (a.y + b.y) / 2,
-            vx: (Math.random() - 0.5) * 6, vy: (Math.random() - 0.5) * 6,
-            life: 1, color: "#ffffff", size: Math.random() * 3 + 2,
-          });
-        }
-      }
-    }
-  }
-
-  for (const bear of state.bears) {
-    if (!bear.isAlive) continue;
-    const dx = bear.x - state.arenaCx;
-    const dy = bear.y - state.arenaCy;
-    const erx = state.arenaRadius * POLAR_RX_SCALE - bear.radius * 0.4;
-    const ery = state.arenaRadius * POLAR_RY_SCALE - bear.radius * 0.4;
-    const ellipseDist = (dx * dx) / (erx * erx) + (dy * dy) / (ery * ery);
-    if (ellipseDist > 1) {
-      bear.isAlive = false;
-      bear.falls++;
-      for (let k = 0; k < 15; k++) {
-        state.particles.push({
-          x: bear.x, y: bear.y,
-          vx: (Math.random() - 0.5) * 8, vy: (Math.random() - 0.5) * 8,
-          life: 1, color: bear.color, size: Math.random() * 4 + 2,
-        });
-      }
-    }
-  }
-
-  const alive = state.bears.filter(b => b.isAlive);
-  if (alive.length <= 1) {
-    state.roundActive = false;
-    state.winner = alive.length === 1 ? alive[0].name : null;
-  }
-}
-
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function HostPage() {
-  const [roomCode] = useState<string>(generateRoomCode);
+  const [roomCode, setRoomCode] = useState("");
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => setRoomCode(generateRoomCode()));
+    return () => cancelAnimationFrame(frame);
+  }, []);
   const [status, setStatus] = useState<"connecting" | "ready" | "error">("connecting");
   const [qrDataUrl, setQrDataUrl] = useState<string>("");
   const [joinUrl, setJoinUrl] = useState<string>("");
@@ -272,6 +119,12 @@ export default function HostPage() {
   const [playerCount, setPlayerCount] = useState(0);
   const galleryIndexRef = useRef(0);
   const [activeGame, setActiveGame] = useState<string | null>(null);
+  const [session, setSession] = useState<SessionState | null>(null);
+  const pausedRef = useRef(false);
+  const [gameEpoch, setGameEpoch] = useState(0);
+  const playersRef = useRef(new Map<string, Player>());
+  const executeRef = useRef<(action: "restart" | "lobby") => void>(() => {});
+  const command = (action: RemoteCommand) => getSocket().emit("remote_command", { roomCode, action });
   const activeGameRef = useRef<string | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -280,7 +133,10 @@ export default function HostPage() {
   const pongLoopRef = useRef<(() => void) | null>(null);
   
   const snakesRef = useRef<Map<string, SnakeState>>(new Map());
-  const foodRef = useRef<FoodOrb[]>([]);
+  const slitherRef = useRef<SlitherEngine | null>(null);
+  const accumulatorRef = useRef(0);
+  const hudTimeRef = useRef(0);
+  const [snakeHud, setSnakeHud] = useState({ phase: "waiting", remaining: 180, countdown: 3, feed: [] as string[] });
   const lastTimeRef = useRef<number>(0);
 
   const pongInputRef = useRef<Map<string, PaddleDir>>(new Map());
@@ -302,35 +158,35 @@ export default function HostPage() {
   const dashInitializedRef = useRef(false);
   const dashLoopRef = useRef<(() => void) | null>(null);
 
-  const polarStateRef = useRef<PolarBashState>({
-    bears: [],
-    arenaCx: 0, arenaCy: 0,
-    arenaRadius: 0, maxArenaRadius: 0,
-    shrinkTimer: 0,
-    roundActive: false,
-    winner: null,
-    initialized: false,
-    particles: [],
-    snowParticles: [],
-  });
-  const polarLoopRef = useRef<(() => void) | null>(null);
-  const polarInputRef = useRef<Map<string, number>>(new Map());
+  const polarRef = useRef<PolarEngine | null>(null);
+  const [polarHud, setPolarHud] = useState<PolarHud | null>(null);
+  const wormsRef = useRef<WormsEngine | null>(null);
+  const wormsAudioRef = useRef<WormsAudio | null>(null);
+  const [wormsHud, setWormsHud] = useState<WormsSnapshot | null>(null);
 
   // Sync ref with state
   useEffect(() => { galleryIndexRef.current = galleryIndex; }, [galleryIndex]);
   useEffect(() => { activeGameRef.current = activeGame; }, [activeGame]);
   // ─── QR Code generation ──────────────────────────────────────────────────
   useEffect(() => {
+    if (!roomCode) return;
     async function buildJoinUrl() {
       let host = window.location.hostname;
-      try {
-        const res = await fetch("/api/local-ip");
-        const data = await res.json();
-        if (data.ip && data.ip !== "localhost") host = data.ip;
-      } catch {
-        // Fallback
+      // Only swap in the LAN IP when the host page was opened on this machine;
+      // if it was opened via a LAN/Tailscale address, phones can use that same address.
+      if (host === "localhost" || host === "127.0.0.1") {
+        try {
+          const res = await fetch("/api/local-ip");
+          const data = await res.json();
+          if (data.ip && data.ip !== "localhost") host = data.ip;
+        } catch {
+          // Fallback
+        }
       }
-      const url = `http://${host}:${window.location.port || 3000}/join?code=${roomCode}`;
+      const target = new URL("/join", window.location.origin);
+      target.hostname = host;
+      target.searchParams.set("code", roomCode);
+      const url = target.toString();
       setJoinUrl(url);
       QRCode.toDataURL(url, {
         width: 200,
@@ -343,6 +199,7 @@ export default function HostPage() {
 
   // ─── Socket setup ────────────────────────────────────────────────────────
   useEffect(() => {
+    if (!roomCode) return;
     const socket = getSocket();
 
     socket.connect();
@@ -360,22 +217,10 @@ export default function HostPage() {
     });
 
     socket.on("player_joined", ({ player }) => {
-      const canvas = canvasRef.current;
-      const w = canvas?.width ?? 800;
-      const h = canvas?.height ?? 500;
-
-      const newSnake: SnakeState = {
-        player,
-        segments: [{ x: Math.random() * (w - 100) + 50, y: Math.random() * (h - 100) + 50 }],
-        angle: Math.random() * Math.PI * 2,
-        targetAngle: Math.random() * Math.PI * 2,
-        targetLength: INITIAL_LENGTH,
-        isBoosting: false,
-        score: 0,
-        isDead: false,
-      };
-      
+      playersRef.current.set(player.id, player);
+      const newSnake = createSnake(player);
       snakesRef.current.set(player.id, newSnake);
+      slitherRef.current?.spawn(newSnake);
       setPlayerCount(snakesRef.current.size);
 
       if (activeGameRef.current === "pong") {
@@ -391,17 +236,13 @@ export default function HostPage() {
         }
       }
 
-      if (activeGameRef.current === "polarbash") {
-        const ps = polarStateRef.current;
-        const aiBear = ps.bears.find(b => b.playerId === null);
-        if (aiBear) {
-          aiBear.playerId = player.id;
-          aiBear.name = player.name;
-        }
-      }
+      polarRef.current?.addPlayer(player);
+      wormsRef.current?.addPlayer(player);
     });
 
     socket.on("player_left", ({ playerId }) => {
+      playersRef.current.delete(playerId);
+      pongInputRef.current.delete(playerId);
       snakesRef.current.delete(playerId);
       setPlayerCount(snakesRef.current.size);
       const state = pongStateRef.current;
@@ -413,17 +254,15 @@ export default function HostPage() {
         state.rightPlayerId = null;
         state.rightPlayerName = "AI";
       }
-      const ps = polarStateRef.current;
-      const bear = ps.bears.find(b => b.playerId === playerId);
-      if (bear) {
-        bear.playerId = null;
-        bear.name = `AI ${bear.slot + 1}`;
-      }
-      polarInputRef.current.delete(playerId);
+      polarRef.current?.removePlayer(playerId);
+      const worms = wormsRef.current;
+      if (worms?.teams[worms.current]?.playerId === playerId) { worms.charging = false; worms.power = 0; worms.jetOn = false; wormsAudioRef.current?.stopCharge(); }
+      worms?.removePlayer(playerId);
     });
 
     // ── Gallery navigation ────────────────────────────────────────────────
     socket.on("gallery_navigate", ({ direction }) => {
+      if (activeGameRef.current) return;
       setGalleryIndex((prev) => {
         const next = direction === "left"
           ? (prev - 1 + GAMES.length) % GAMES.length
@@ -433,46 +272,33 @@ export default function HostPage() {
     });
 
     socket.on("gallery_select", () => {
+      if (activeGameRef.current) return;
       const idx = galleryIndexRef.current;
       setActiveGame(GAMES[idx].id);
       socket.emit("game_started", { gameIndex: idx, gameName: GAMES[idx].name });
     });
 
-    socket.on("gallery_back", () => {
-      setActiveGame(null);
-      // Clear snakes when leaving game
-      snakesRef.current.clear();
-      foodRef.current = [];
-      pongInputRef.current.clear();
-      pongInitializedRef.current = false;
-      const state = pongStateRef.current;
-      state.leftScore = 0;
-      state.rightScore = 0;
-      state.leftPlayerId = null;
-      state.rightPlayerId = null;
-      state.leftPlayerName = "Player 1";
-      state.rightPlayerName = "AI";
-      const ds = dashStateRef.current;
-      ds.running = false;
-      ds.obstacles = [];
-      ds.particles = [];
-      ds.score = 0;
-      dashInitializedRef.current = false;
-      const pol = polarStateRef.current;
-      pol.bears = [];
-      pol.particles = [];
-      pol.snowParticles = [];
-      pol.roundActive = false;
-      pol.winner = null;
-      pol.initialized = false;
-      polarInputRef.current.clear();
-      socket.emit("game_ended", { roomCode });
+    socket.on("session_state", (state) => {
+      pausedRef.current = state.paused;
+      if (state.paused) {
+        pongInputRef.current.clear();
+        for (const snake of snakesRef.current.values()) snake.isBoosting = false;
+        for (const id of playersRef.current.keys()) polarRef.current?.steer(id, null);
+        const worms = wormsRef.current;
+        if (worms) {
+          for (const team of worms.teams) team.keys.clear();
+          worms.charging = false; worms.power = 0; worms.jetOn = false;
+          wormsAudioRef.current?.stopCharge();
+        }
+      }
+      setSession(state);
     });
+    socket.on("remote_execute", ({ action }) => executeRef.current(action));
 
     // ── Gameplay events ───────────────────────────────────────────────────
     socket.on("player_steer", ({ playerId, angle }) => {
       if (activeGameRef.current === "polarbash") {
-        if (angle !== null) polarInputRef.current.set(playerId, angle);
+        polarRef.current?.steer(playerId, angle);
         return;
       }
       const snake = snakesRef.current.get(playerId);
@@ -485,20 +311,7 @@ export default function HostPage() {
 
     socket.on("player_boost_start", ({ playerId }) => {
       if (activeGameRef.current === "polarbash") {
-        const ps = polarStateRef.current;
-        if (!ps.roundActive) {
-          // Restart round after winner
-          polarResetRound(ps);
-          return;
-        }
-        const bear = ps.bears.find(b => b.playerId === playerId && b.isAlive);
-        if (bear && bear.dashCooldown <= 0 && !bear.isDashing) {
-          bear.isDashing = true;
-          bear.dashTimer = POLAR_DASH_DURATION;
-          bear.dashCooldown = POLAR_DASH_COOLDOWN;
-          bear.vx = Math.cos(bear.angle) * POLAR_DASH_SPEED;
-          bear.vy = Math.sin(bear.angle) * POLAR_DASH_SPEED;
-        }
+        polarRef.current?.dash(playerId);
         return;
       }
       const snake = snakesRef.current.get(playerId);
@@ -524,21 +337,30 @@ export default function HostPage() {
         dashInitializedRef.current = false;
         return;
       }
-      if (activeGameRef.current === "polarbash") {
-        polarResetRound(polarStateRef.current);
-        return;
-      }
-      const snake = snakesRef.current.get(playerId);
-      if (snake && snake.isDead) {
-        const canvas = canvasRef.current;
-        const w = canvas?.width ?? 800;
-        const h = canvas?.height ?? 500;
-        snake.isDead = false;
-        snake.segments = [{ x: Math.random() * (w - 100) + 50, y: Math.random() * (h - 100) + 50 }];
-        snake.targetLength = INITIAL_LENGTH;
-        snake.score = 0;
-        snake.isBoosting = false;
-      }
+      slitherRef.current?.respawn(playerId);
+
+    });
+
+    socket.on("player_polar_action", ({ playerId, action }) => {
+      const game = polarRef.current;
+      if (!game) return;
+      if (action.kind === "ready") game.toggleReady(playerId);
+      else if (action.kind === "class") game.setClass(playerId, action.value);
+      else if (game.humans()[0]?.playerId === playerId) game.setStage(game.stage + action.dir);
+    });
+
+    socket.on("player_worms_input", ({ playerId, action }) => {
+      const g = wormsRef.current;
+      if (!g) return;
+      const lead = g.humans[0]?.player.id === playerId;
+      if (action.kind === "key") g.pressPlayer(playerId, action.key, action.down);
+      else if (action.kind === "weapon") g.selectWeapon(playerId, action.id);
+      else if (action.kind === "fuse") g.setFuse(playerId, action.value);
+      else if (action.kind === "ready") g.toggleReady(playerId);
+      else if (lead && action.what === "theme") g.setTheme(g.theme + action.dir);
+      else if (lead && action.what === "worms") g.cycleWorms(action.dir);
+      else if (lead && action.what === "time") g.cycleTime(action.dir);
+      else if (lead && action.what === "cpus") g.setCpus(g.cpus + action.dir);
     });
 
     socket.on("player_pong_move", ({ playerId, direction }) => {
@@ -573,231 +395,87 @@ export default function HostPage() {
       }
     });
 
+    socket.on("disconnect", () => {
+      setStatus("connecting"); setActiveGame(null);
+      snakesRef.current.clear(); playersRef.current.clear(); setPlayerCount(0); pausedRef.current = false; setSession(null);
+    });
+
     socket.on("room_closed", () => {
       setStatus("error");
     });
 
     return () => {
       socket.off("connect");
+      socket.off("disconnect");
       socket.off("room_created");
       socket.off("connect_error");
       socket.off("player_joined");
       socket.off("player_left");
       socket.off("gallery_navigate");
       socket.off("gallery_select");
-      socket.off("gallery_back");
+      socket.off("session_state");
+      socket.off("remote_execute");
       socket.off("player_steer");
       socket.off("player_boost_start");
       socket.off("player_boost_end");
       socket.off("player_respawn_request");
       socket.off("player_pong_move");
+      socket.off("player_polar_action");
+      socket.off("player_worms_input");
       socket.off("player_dash_jump");
       socket.off("room_closed");
       destroySocket();
     };
   }, [roomCode]);
 
-  // ─── Game Engine Loop ────────────────────────────────────────────────────
+  // Fixed 60 Hz simulation; capped catch-up avoids tab-resume jumps.
   const gameLoop = useCallback((timestamp: number) => {
-    if (!lastTimeRef.current) lastTimeRef.current = timestamp;
-    lastTimeRef.current = timestamp;
-
+    if (pausedRef.current) { lastTimeRef.current = 0; accumulatorRef.current = 0; animFrameRef.current = requestAnimationFrame(t => snakeLoopRef.current?.(t)); return; }
     const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const W = canvas.width;
-    const H = canvas.height;
-
-    // 1. Spawner Logic
-    if (foodRef.current.length < MAX_FOOD) {
-      if (Math.random() < 0.1) {
-        foodRef.current.push({
-          id: generateId(),
-          x: Math.random() * (W - 20) + 10,
-          y: Math.random() * (H - 20) + 10,
-          color: `hsl(${Math.random() * 360}, 80%, 60%)`,
-          value: FOOD_VALUE,
-        });
-      }
+    const ctx = canvas?.getContext("2d");
+    const game = slitherRef.current;
+    if (!canvas || !ctx || !game) return;
+    const elapsed = lastTimeRef.current ? Math.min((timestamp - lastTimeRef.current) / 1000, 0.1) : 0;
+    lastTimeRef.current = timestamp;
+    accumulatorRef.current += elapsed;
+    while (accumulatorRef.current >= 1 / 60) {
+      game.step(1 / 60);
+      accumulatorRef.current -= 1 / 60;
     }
-
-    // 2. Physics & State Updates
-    const snakes = Array.from(snakesRef.current.values()).filter(s => !s.isDead);
-    
-    snakes.forEach((snake) => {
-      const head = snake.segments[0];
-
-      const diff = angleDiff(snake.angle, snake.targetAngle);
-      if (Math.abs(diff) <= TURN_SPEED) {
-        snake.angle = snake.targetAngle;
-      } else {
-        snake.angle += Math.sign(diff) * TURN_SPEED;
-      }
-
-      let speed = BASE_SPEED;
-      if (snake.isBoosting && snake.targetLength > INITIAL_LENGTH + 2) {
-        speed = BOOST_SPEED;
-        snake.targetLength -= 0.2;
-        snake.score = Math.floor(snake.targetLength - INITIAL_LENGTH);
-      } else {
-        snake.isBoosting = false;
-      }
-
-      const newHead = {
-        x: head.x + Math.cos(snake.angle) * speed,
-        y: head.y + Math.sin(snake.angle) * speed,
-      };
-
-      if (snake.segments.length === 1) {
-        snake.segments.unshift(newHead);
-      } else {
-        if (distSq(newHead, snake.segments[1]) >= SEGMENT_SPACING * SEGMENT_SPACING) {
-          snake.segments.unshift(newHead);
-        } else {
-          snake.segments[0] = newHead;
-        }
-      }
-
-      while (snake.segments.length > Math.floor(snake.targetLength)) {
-        snake.segments.pop();
-      }
-
-      if (newHead.x < 0 || newHead.x > W || newHead.y < 0 || newHead.y > H) {
-        killSnake(snake.player.id, snake);
-        return;
-      }
-
-      for (let i = foodRef.current.length - 1; i >= 0; i--) {
-        const food = foodRef.current[i];
-        if (distSq(newHead, food) < (SNAKE_RADIUS + FOOD_RADIUS) ** 2) {
-          snake.targetLength += food.value;
-          snake.score = Math.floor(snake.targetLength - INITIAL_LENGTH);
-          foodRef.current.splice(i, 1);
-        }
-      }
-
-      for (const other of snakes) {
-        if (other.player.id === snake.player.id) continue;
-        
-        for (let i = 2; i < other.segments.length; i++) {
-          const seg = other.segments[i];
-          if (distSq(newHead, seg) < (SNAKE_RADIUS * 1.8) ** 2) {
-            killSnake(snake.player.id, snake);
-            break;
-          }
-        }
-        if (snake.isDead) break;
-      }
-    });
-
-    function killSnake(id: string, snake: SnakeState) {
-      snake.isDead = true;
-      
-      getSocket().emit("player_died", { playerId: id, score: snake.score });
-
-      snake.segments.forEach((seg, index) => {
-        if (index % 3 === 0) {
-          foodRef.current.push({
-            id: generateId(),
-            x: seg.x + (Math.random() * 20 - 10),
-            y: seg.y + (Math.random() * 20 - 10),
-            color: snake.player.color,
-            value: Math.max(1, Math.floor(snake.targetLength / 40)),
-          });
-        }
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    renderSlither(ctx, game, canvas.width / dpr, canvas.height / dpr, timestamp / 1000);
+    if (timestamp - hudTimeRef.current > 100) {
+      hudTimeRef.current = timestamp;
+      setSnakeHud({ phase: game.phase, remaining: Math.ceil(game.remaining), countdown: Math.ceil(game.countdown), feed: game.feed.map(f => f.text) });
+      setLeaderboard(game.rankings().map(s => ({ id: s.player.id, name: s.player.name, score: s.bank, color: s.player.color })));
+      for (const s of game.snakes.values()) getSocket().emit("slither_status", {
+        playerId: s.player.id, phase: game.phase, remaining: Math.ceil(game.remaining), score: s.bank,
+        length: s.score, kills: s.kills, dead: s.isDead, cooldown: Math.max(0, Math.ceil(s.respawnAt - game.time)),
+        boost: Math.max(0, Math.min(100, (s.targetLength - 26) / 60 * 100)),
       });
     }
-
-    // 3. Rendering
-    ctx.fillStyle = ARENA_BG;
-    ctx.fillRect(0, 0, W, H);
-
-    ctx.strokeStyle = "rgba(255,255,255,0.03)";
-    ctx.lineWidth = 1;
-    for (let x = 0; x < W; x += 50) {
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
-    }
-    for (let y = 0; y < H; y += 50) {
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
-    }
-
-    foodRef.current.forEach(food => {
-      ctx.shadowColor = food.color;
-      ctx.shadowBlur = 10;
-      ctx.fillStyle = food.color;
-      ctx.beginPath();
-      ctx.arc(food.x, food.y, FOOD_RADIUS + (food.value > 5 ? 4 : 0), 0, Math.PI * 2);
-      ctx.fill();
-    });
-    ctx.shadowBlur = 0;
-
-    snakes.forEach(snake => {
-      for (let i = snake.segments.length - 1; i >= 0; i--) {
-        const seg = snake.segments[i];
-        
-        ctx.fillStyle = snake.player.color;
-        const sizeRatio = 1 - (i / snake.segments.length) * 0.4;
-        const currentRadius = SNAKE_RADIUS * sizeRatio;
-        
-        ctx.beginPath();
-        ctx.arc(seg.x, seg.y, currentRadius, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.fillStyle = "rgba(255,255,255,0.15)";
-        ctx.beginPath();
-        ctx.arc(seg.x, seg.y, currentRadius * 0.6, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      const head = snake.segments[0];
-      if (!head) return;
-
-      const eyeOffset = SNAKE_RADIUS * 0.6;
-      const leftEye = {
-        x: head.x + Math.cos(snake.angle - 0.6) * eyeOffset,
-        y: head.y + Math.sin(snake.angle - 0.6) * eyeOffset,
-      };
-      const rightEye = {
-        x: head.x + Math.cos(snake.angle + 0.6) * eyeOffset,
-        y: head.y + Math.sin(snake.angle + 0.6) * eyeOffset,
-      };
-
-      ctx.fillStyle = "#ffffff";
-      ctx.beginPath(); ctx.arc(leftEye.x, leftEye.y, SNAKE_RADIUS * 0.35, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(rightEye.x, rightEye.y, SNAKE_RADIUS * 0.35, 0, Math.PI * 2); ctx.fill();
-
-      ctx.fillStyle = "#000000";
-      ctx.beginPath(); ctx.arc(leftEye.x + Math.cos(snake.angle)*(SNAKE_RADIUS*0.15), leftEye.y + Math.sin(snake.angle)*(SNAKE_RADIUS*0.15), SNAKE_RADIUS * 0.15, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(rightEye.x + Math.cos(snake.angle)*(SNAKE_RADIUS*0.15), rightEye.y + Math.sin(snake.angle)*(SNAKE_RADIUS*0.15), SNAKE_RADIUS * 0.15, 0, Math.PI * 2); ctx.fill();
-
-      ctx.fillStyle = "#ffffff";
-      ctx.font = "bold 12px Inter, sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText(snake.player.name, head.x, head.y - SNAKE_RADIUS - 10);
-    });
-
-    if (Math.random() < 0.05) {
-      const topSnakes = Array.from(snakesRef.current.values())
-        .filter(s => !s.isDead)
-        .sort((a, b) => b.score - a.score)
-        .map(s => ({ id: s.player.id, name: s.player.name, score: s.score, color: s.player.color }));
-      setLeaderboard(topSnakes);
-    }
-
     animFrameRef.current = requestAnimationFrame((t) => snakeLoopRef.current?.(t));
   }, []);
 
   useEffect(() => {
-    if (activeGame === "snake") {
-      animFrameRef.current = requestAnimationFrame(gameLoop);
-      return () => cancelAnimationFrame(animFrameRef.current);
-    }
-  }, [activeGame, gameLoop]);
+    if (activeGame !== "snake") return;
+    const game = new SlitherEngine(snakesRef.current);
+    game.onDeath = s => getSocket().emit("player_died", { playerId: s.player.id, score: s.bank });
+    game.reset(); slitherRef.current = game;
+    lastTimeRef.current = 0; accumulatorRef.current = 0;
+    animFrameRef.current = requestAnimationFrame(gameLoop);
+    const visibility = () => {
+      lastTimeRef.current = 0; accumulatorRef.current = 0;
+      for (const s of snakesRef.current.values()) s.isBoosting = false;
+    };
+    document.addEventListener("visibilitychange", visibility);
+    return () => { cancelAnimationFrame(animFrameRef.current); document.removeEventListener("visibilitychange", visibility); slitherRef.current = null; };
+  }, [activeGame, gameLoop, gameEpoch]);
 
 // ─── Pong Game Loop ────────────────────────────────────────────────────────
 const pongGameLoop = useCallback(() => {
+  if (pausedRef.current) { animFrameRef.current = requestAnimationFrame(() => pongLoopRef.current?.()); return; }
   const canvas = canvasRef.current;
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
@@ -987,6 +665,7 @@ const pongGameLoop = useCallback(() => {
 
 // ─── DashZone Game Loop ────────────────────────────────────────────────────
 const dashGameLoop = useCallback(() => {
+  if (pausedRef.current) { animFrameRef.current = requestAnimationFrame(() => dashLoopRef.current?.()); return; }
   // game-loop mutation pattern — intentional
   const canvas = canvasRef.current;
   if (!canvas) return;
@@ -1209,382 +888,9 @@ const dashGameLoop = useCallback(() => {
   animFrameRef.current = requestAnimationFrame(() => dashLoopRef.current?.());
 }, []);
 
-// ─── PolarBash Game Loop ───────────────────────────────────────────────────
-const polarGameLoop = useCallback(() => {
-  const canvas = canvasRef.current;
-  if (!canvas) return;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return;
-
-  const W = canvas.width;
-  const H = canvas.height;
-  if (W < 100 || H < 100) {
-    animFrameRef.current = requestAnimationFrame(() => polarLoopRef.current?.());
-    return;
-  }
-
-  const state = polarStateRef.current;
-
-  // Initialize bears on first frame
-  if (!state.initialized) {
-    state.arenaCx = W / 2;
-    state.arenaCy = H / 2;
-    state.maxArenaRadius = Math.min(W, H) * POLAR_ARENA_FRAC;
-    state.arenaRadius = state.maxArenaRadius;
-    const players = Array.from(snakesRef.current.values()).map(s => s.player);
-    state.bears = [];
-    const count = 4;
-    for (let i = 0; i < count; i++) {
-      const player = players[i];
-      const a = (i / count) * Math.PI * 2 - Math.PI / 2;
-      const irx = state.arenaRadius * POLAR_RX_SCALE * 0.55;
-      const iry = state.arenaRadius * POLAR_RY_SCALE * 0.55;
-      state.bears.push({
-        slot: i,
-        playerId: player ? player.id : null,
-        name: player ? player.name : `AI ${i + 1}`,
-        color: POLAR_BEAR_COLORS[i],
-        x: state.arenaCx + Math.cos(a) * irx,
-        y: state.arenaCy + Math.sin(a) * iry,
-        vx: 0, vy: 0,
-        angle: a + Math.PI,
-        targetAngle: a + Math.PI,
-        isAlive: true,
-        isDashing: false,
-        dashCooldown: 0,
-        dashTimer: 0,
-        radius: POLAR_BEAR_RADIUS,
-        falls: 0,
-      });
-    }
-    state.roundActive = true;
-    state.winner = null;
-    state.shrinkTimer = 0;
-    state.particles = [];
-    state.snowParticles = [];
-    state.initialized = true;
-  }
-
-  // Spawn ambient snow
-  if (Math.random() < 0.4) {
-    state.snowParticles.push({
-      x: Math.random() * W, y: -10,
-      vx: (Math.random() - 0.5) * 0.5, vy: Math.random() * 1.5 + 0.8,
-      life: 1, color: "#ffffff", size: Math.random() * 2 + 1,
-    });
-  }
-  state.snowParticles = state.snowParticles.map(p => ({
-    ...p, x: p.x + p.vx, y: p.y + p.vy, life: p.life - 0.003,
-  })).filter(p => p.life > 0 && p.y < H + 20);
-
-  // Round logic
-  if (state.roundActive) {
-    polarStepPhysics(state, polarInputRef.current);
-
-    // Update particles
-    state.particles = state.particles.map(p => ({
-      ...p, x: p.x + p.vx, y: p.y + p.vy, vy: p.vy + 0.2, life: p.life - 0.03,
-    })).filter(p => p.life > 0);
-  }
-
-  // ─── Render ─────────────────────────────────────────────────────────────
-  const cx = state.arenaCx;
-  const cy = state.arenaCy;
-  const rx = state.arenaRadius * POLAR_RX_SCALE;
-  const ry = state.arenaRadius * POLAR_RY_SCALE;
-  const depth = POLAR_ICE_DEPTH;
-
-  // Ocean background with depth gradient
-  const oceanGrad = ctx.createLinearGradient(0, 0, 0, H);
-  oceanGrad.addColorStop(0, "#041e2e");
-  oceanGrad.addColorStop(0.5, "#062a3a");
-  oceanGrad.addColorStop(1, "#0a3d52");
-  ctx.fillStyle = oceanGrad;
-  ctx.fillRect(0, 0, W, H);
-
-  // Ocean wave lines
-  ctx.strokeStyle = "rgba(125,211,252,0.04)";
-  ctx.lineWidth = 1;
-  for (let i = 0; i < 8; i++) {
-    const waveY = cy + ry + 30 + i * 25;
-    ctx.beginPath();
-    for (let x = 0; x < W; x += 4) {
-      const y = waveY + Math.sin((x + state.shrinkTimer * 0.5 + i * 40) * 0.02) * 6;
-      if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-  }
-
-  // Snow particles (behind ice)
-  for (const p of state.snowParticles) {
-    ctx.globalAlpha = p.life * 0.4;
-    ctx.fillStyle = p.color;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-
-  // Ice platform shadow on water
-  ctx.fillStyle = "rgba(0,0,0,0.15)";
-  ctx.beginPath();
-  ctx.ellipse(cx + 4, cy + depth + 8, rx + 6, ry + 4, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Ice side face (3D depth)
-  ctx.fillStyle = "#0e7490";
-  ctx.beginPath();
-  ctx.moveTo(cx - rx, cy);
-  ctx.lineTo(cx - rx, cy + depth);
-  ctx.ellipse(cx, cy + depth, rx, ry, 0, Math.PI, 0, true);
-  ctx.lineTo(cx + rx, cy);
-  ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI, true);
-  ctx.closePath();
-  ctx.fill();
-
-  // Ice side face highlight
-  const sideGrad = ctx.createLinearGradient(cx - rx, cy, cx - rx, cy + depth);
-  sideGrad.addColorStop(0, "rgba(186,230,253,0.3)");
-  sideGrad.addColorStop(1, "rgba(14,116,144,0.1)");
-  ctx.fillStyle = sideGrad;
-  ctx.beginPath();
-  ctx.moveTo(cx - rx, cy);
-  ctx.lineTo(cx - rx, cy + depth);
-  ctx.ellipse(cx, cy + depth, rx, ry, 0, Math.PI, 0, true);
-  ctx.lineTo(cx + rx, cy);
-  ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI, true);
-  ctx.closePath();
-  ctx.fill();
-
-  // Ice top face
-  const iceGrad = ctx.createRadialGradient(cx - rx * 0.2, cy - ry * 0.3, rx * 0.15, cx, cy, rx);
-  iceGrad.addColorStop(0, "#f0f9ff");
-  iceGrad.addColorStop(0.4, "#e0f2fe");
-  iceGrad.addColorStop(0.75, "#bae6fd");
-  iceGrad.addColorStop(1, "#7dd3fc");
-  ctx.fillStyle = iceGrad;
-  ctx.beginPath();
-  ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Ice cracks
-  ctx.strokeStyle = "rgba(14,116,144,0.15)";
-  ctx.lineWidth = 1.5;
-  for (let i = 0; i < 8; i++) {
-    const a = (i / 8) * Math.PI * 2 + 0.3;
-    const len = 0.5 + Math.random() * 0.4;
-    ctx.beginPath();
-    ctx.moveTo(cx + Math.cos(a) * rx * 0.15, cy + Math.sin(a) * ry * 0.15);
-    ctx.lineTo(cx + Math.cos(a) * rx * len, cy + Math.sin(a) * ry * len);
-    ctx.stroke();
-  }
-
-  // Ice specular highlight
-  ctx.fillStyle = "rgba(255,255,255,0.12)";
-  ctx.beginPath();
-  ctx.ellipse(cx - rx * 0.25, cy - ry * 0.3, rx * 0.35, ry * 0.2, -0.3, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Ice rim
-  ctx.strokeStyle = "rgba(255,255,255,0.4)";
-  ctx.lineWidth = 2.5;
-  ctx.beginPath();
-  ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-  ctx.stroke();
-
-  // Inner rim glow
-  ctx.strokeStyle = "rgba(186,230,253,0.2)";
-  ctx.lineWidth = 5;
-  ctx.beginPath();
-  ctx.ellipse(cx, cy, rx - 4, ry - 3, 0, 0, Math.PI * 2);
-  ctx.stroke();
-
-  // Impact particles (behind bears)
-  for (const p of state.particles) {
-    ctx.globalAlpha = p.life;
-    ctx.fillStyle = p.color;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-
-  // Sort bears by Y for depth ordering (back to front)
-  const sortedBears = [...state.bears].filter(b => b.isAlive).sort((a, b) => a.y - b.y);
-
-  // Draw bears with 3D shading
-  for (const bear of sortedBears) {
-    const r = bear.radius;
-    // Perspective scale: bears further back are slightly smaller
-    const yNorm = (bear.y - (cy - ry)) / (ry * 2);
-    const scale = 0.82 + yNorm * 0.35;
-    const sr = r * scale;
-
-    ctx.save();
-    ctx.translate(bear.x, bear.y);
-
-    // Drop shadow on ice
-    ctx.fillStyle = "rgba(0,20,40,0.18)";
-    ctx.beginPath();
-    ctx.ellipse(3 * scale, 6 * scale, sr * 1.1, sr * 0.45, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Rotate for facing direction
-    ctx.rotate(bear.angle);
-
-    // Body (main volume) — large rounded shape
-    const bodyGrad = ctx.createRadialGradient(-sr * 0.2, -sr * 0.3, sr * 0.1, sr * 0.1, sr * 0.2, sr * 1.1);
-    bodyGrad.addColorStop(0, "#ffffff");
-    bodyGrad.addColorStop(0.5, "#f1f5f9");
-    bodyGrad.addColorStop(1, "#cbd5e1");
-    ctx.fillStyle = bodyGrad;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, sr * 1.05, sr * 0.92, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Body outline (subtle)
-    ctx.strokeStyle = "rgba(148,163,184,0.3)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, sr * 1.05, sr * 0.92, 0, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // Belly highlight
-    ctx.fillStyle = "rgba(255,255,255,0.5)";
-    ctx.beginPath();
-    ctx.ellipse(-sr * 0.1, -sr * 0.15, sr * 0.55, sr * 0.4, -0.2, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Head (front bump)
-    const headGrad = ctx.createRadialGradient(sr * 0.5, -sr * 0.15, sr * 0.05, sr * 0.55, 0, sr * 0.55);
-    headGrad.addColorStop(0, "#ffffff");
-    headGrad.addColorStop(1, "#e2e8f0");
-    ctx.fillStyle = headGrad;
-    ctx.beginPath();
-    ctx.arc(sr * 0.55, 0, sr * 0.52, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Ears
-    const earR = sr * 0.22;
-    ctx.fillStyle = "#f1f5f9";
-    ctx.beginPath();
-    ctx.arc(sr * 0.35, -sr * 0.52, earR, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(sr * 0.35, sr * 0.52, earR, 0, Math.PI * 2);
-    ctx.fill();
-    // Inner ears (player color)
-    ctx.fillStyle = bear.color;
-    ctx.beginPath();
-    ctx.arc(sr * 0.35, -sr * 0.52, earR * 0.55, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(sr * 0.35, sr * 0.52, earR * 0.55, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Snout
-    ctx.fillStyle = "#fafafa";
-    ctx.beginPath();
-    ctx.ellipse(sr * 0.82, 0, sr * 0.28, sr * 0.22, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // Nose
-    ctx.fillStyle = "#1e293b";
-    ctx.beginPath();
-    ctx.ellipse(sr * 0.98, 0, sr * 0.09, sr * 0.07, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Eyes
-    ctx.fillStyle = "#0f172a";
-    ctx.beginPath();
-    ctx.arc(sr * 0.62, -sr * 0.22, sr * 0.08, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(sr * 0.62, sr * 0.22, sr * 0.08, 0, Math.PI * 2);
-    ctx.fill();
-    // Eye shine
-    ctx.fillStyle = "#ffffff";
-    ctx.beginPath();
-    ctx.arc(sr * 0.64, -sr * 0.24, sr * 0.03, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(sr * 0.64, sr * 0.20, sr * 0.03, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Front paws
-    ctx.fillStyle = "#e2e8f0";
-    ctx.beginPath();
-    ctx.ellipse(sr * 0.7, -sr * 0.6, sr * 0.18, sr * 0.12, -0.4, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.ellipse(sr * 0.7, sr * 0.6, sr * 0.18, sr * 0.12, 0.4, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Dash glow ring
-    if (bear.isDashing) {
-      ctx.strokeStyle = bear.color;
-      ctx.lineWidth = 3 * scale;
-      ctx.globalAlpha = 0.7;
-      ctx.beginPath();
-      ctx.ellipse(0, 0, sr * 1.25, sr * 1.1, 0, 0, Math.PI * 2);
-      ctx.stroke();
-      // Motion lines behind
-      ctx.strokeStyle = "rgba(255,255,255,0.3)";
-      ctx.lineWidth = 2 * scale;
-      for (let l = 0; l < 3; l++) {
-        const ly = (l - 1) * sr * 0.4;
-        ctx.beginPath();
-        ctx.moveTo(-sr * 1.1, ly);
-        ctx.lineTo(-sr * 1.6 - Math.random() * sr * 0.3, ly);
-        ctx.stroke();
-      }
-      ctx.globalAlpha = 1;
-    }
-
-    ctx.restore();
-
-    // Name label (above bear, not rotated)
-    ctx.fillStyle = "rgba(255,255,255,0.8)";
-    ctx.font = `bold ${Math.round(11 * scale)}px Inter, sans-serif`;
-    ctx.textAlign = "center";
-    ctx.fillText(bear.name, bear.x, bear.y - sr - 10 * scale);
-    // Color indicator
-    ctx.fillStyle = bear.color;
-    ctx.beginPath();
-    ctx.arc(bear.x, bear.y - sr - 18 * scale, 3 * scale, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // Dead bears (sinking in water)
-  for (const bear of state.bears) {
-    if (bear.isAlive) continue;
-    ctx.globalAlpha = 0.25;
-    ctx.fillStyle = bear.color;
-    ctx.beginPath();
-    ctx.arc(bear.x, bear.y + 10, bear.radius * 0.6, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.globalAlpha = 1;
-  }
-
-  // Winner overlay
-  if (!state.roundActive && state.winner) {
-    ctx.fillStyle = "rgba(0,0,0,0.65)";
-    ctx.fillRect(0, 0, W, H);
-    ctx.fillStyle = "#fbbf24";
-    ctx.font = "bold 52px Inter, sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText(`${state.winner} WINS!`, W / 2, H / 2 - 10);
-    ctx.fillStyle = "rgba(255,255,255,0.5)";
-    ctx.font = "20px Inter, sans-serif";
-    ctx.fillText("Tap ⚡ on phone to play again · BACK to gallery", W / 2, H / 2 + 40);
-  }
-
-  animFrameRef.current = requestAnimationFrame(() => polarLoopRef.current?.());
-}, []);
-
 useEffect(() => { snakeLoopRef.current = gameLoop; }, [gameLoop]);
 useEffect(() => { pongLoopRef.current = pongGameLoop; }, [pongGameLoop]);
 useEffect(() => { dashLoopRef.current = dashGameLoop; }, [dashGameLoop]);
-useEffect(() => { polarLoopRef.current = polarGameLoop; }, [polarGameLoop]);
 
 useEffect(() => {
   if (activeGame === "pong") {
@@ -1617,7 +923,7 @@ useEffect(() => {
     animFrameRef.current = requestAnimationFrame(pongGameLoop);
     return () => cancelAnimationFrame(animFrameRef.current);
   }
-  }, [activeGame, pongGameLoop, roomCode]);
+  }, [activeGame, pongGameLoop, roomCode, gameEpoch]);
 
   useEffect(() => {
     if (activeGame === "dash") {
@@ -1634,31 +940,159 @@ useEffect(() => {
       animFrameRef.current = requestAnimationFrame(dashGameLoop);
       return () => cancelAnimationFrame(animFrameRef.current);
     }
-  }, [activeGame, dashGameLoop]);
+  }, [activeGame, dashGameLoop, gameEpoch]);
+
+  // ─── PolarBash: fixed 60 Hz sim, HUD + phone telemetry at 10 Hz ────────────
+  useEffect(() => {
+    if (activeGame !== "polarbash") return;
+    const game = new PolarEngine();
+    for (const s of snakesRef.current.values()) game.addPlayer(s.player);
+    polarRef.current = game;
+    let last = 0, acc = 0, hudAt = 0;
+    const frame = (ts: number) => {
+      if (pausedRef.current) { last = 0; acc = 0; animFrameRef.current = requestAnimationFrame(frame); return; }
+      const canvas = canvasRef.current, ctx = canvas?.getContext("2d");
+      if (canvas && ctx && polarRef.current === game) {
+        acc += last ? Math.min((ts - last) / 1000, 0.1) : 0;
+        last = ts;
+        while (acc >= 1 / 60) { game.step(1 / 60); acc -= 1 / 60; }
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        renderPolar(ctx, game, canvas.width / dpr, canvas.height / dpr, ts / 1000);
+        if (ts - hudAt > 100) {
+          hudAt = ts;
+          setPolarHud(polarSnapshot(game));
+          const sock = getSocket();
+          for (const p of snakesRef.current.values()) sock.emit("polar_status", game.status(p.player.id));
+        }
+      }
+      animFrameRef.current = requestAnimationFrame(frame);
+    };
+    animFrameRef.current = requestAnimationFrame(frame);
+    const visibility = () => { last = 0; acc = 0; };
+    document.addEventListener("visibilitychange", visibility);
+    return () => {
+      cancelAnimationFrame(animFrameRef.current);
+      document.removeEventListener("visibilitychange", visibility);
+      if (polarRef.current === game) polarRef.current = null;
+      setPolarHud(null);
+    };
+  }, [activeGame, gameEpoch]);
 
   useEffect(() => {
-    if (activeGame === "polarbash") {
-      const ps = polarStateRef.current;
-      ps.bears = [];
-      ps.particles = [];
-      ps.snowParticles = [];
-      ps.roundActive = false;
-      ps.winner = null;
-      ps.initialized = false;
-      polarInputRef.current.clear();
-      animFrameRef.current = requestAnimationFrame(polarGameLoop);
-      return () => cancelAnimationFrame(animFrameRef.current);
-    }
-  }, [activeGame, polarGameLoop]);
+    if (activeGame !== "polarbash") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (pausedRef.current) return;
+      const g = polarRef.current;
+      if (!g) return;
+      if (e.key === "ArrowLeft") g.setStage(g.stage - 1);
+      else if (e.key === "ArrowRight") g.setStage(g.stage + 1);
+      else if (e.key === "Enter" && g.phase === "lobby") g.startMatch();
+      else if (e.key === "Enter" && g.phase === "matchover") g.toLobby();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [activeGame]);
+
+  // ─── WormBlitz: fixed 60 Hz sim, synthesized audio, HUD + phones at 10 Hz ──
+  useEffect(() => {
+    if (activeGame !== "worms") return;
+    const game = new WormsEngine();
+    for (const s of snakesRef.current.values()) game.addPlayer(s.player);
+    game.setKeyboard(game.humans.length === 0);
+    wormsRef.current = game;
+    const view = new WormsRenderer();
+    const audio = new WormsAudio();
+    wormsAudioRef.current = audio;
+    let last = 0, acc = 0, hudAt = 0, raf = 0;
+    const frame = (ts: number) => {
+      if (pausedRef.current) { last = 0; acc = 0; raf = requestAnimationFrame(frame); animFrameRef.current = raf; return; }
+      const canvas = canvasRef.current, ctx = canvas?.getContext("2d");
+      if (canvas && ctx && wormsRef.current === game) {
+        acc += last ? Math.min((ts - last) / 1000, 0.1) : 0;
+        last = ts;
+        while (acc >= 1 / 60) { game.step(1 / 60); acc -= 1 / 60; }
+        const dpr = Math.min(window.devicePixelRatio || 1, 2), vw = canvas.width / dpr, vh = canvas.height / dpr;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        view.render(ctx, game, vw, vh, ts / 1000);
+        const halfView = vw / 2 / view.cam.z;
+        for (const e of game.sfx.splice(0)) {
+          if (e.n === "charge") { audio.startCharge(); continue; }
+          audio.play(e.n, e.v ?? 1, e.x === undefined ? 0 : Math.max(-0.8, Math.min(0.8, (e.x - view.cam.x) / halfView)));
+        }
+        if (game.charging) audio.charge(game.power); else audio.stopCharge();
+        if (ts - hudAt > 100) {
+          hudAt = ts;
+          setWormsHud(game.snapshot());
+          const sock = getSocket();
+          for (const h of game.humans) sock.emit("worms_status", game.status(h.player.id));
+        }
+      }
+      raf = requestAnimationFrame(frame);
+      animFrameRef.current = raf;
+    };
+    raf = requestAnimationFrame(frame);
+    animFrameRef.current = raf;
+    const unlock = () => audio.unlock();
+    const onKey = (e: KeyboardEvent) => {
+      if (pausedRef.current) return;
+      audio.unlock();
+      const down = e.type === "keydown", k = e.key;
+      if (k in WORMS_KEYMAP || k === "Tab") e.preventDefault();
+      if (k === "m" || k === "M") { if (down) audio.toggleMute(); return; }
+      if (game.phase === "lobby") {
+        if (!down) return;
+        if (k === "ArrowLeft") game.setTheme(game.theme - 1);
+        else if (k === "ArrowRight") game.setTheme(game.theme + 1);
+        else if (k === "ArrowUp") game.cycleWorms(1);
+        else if (k === "ArrowDown") game.cycleWorms(-1);
+        else if (k === "t" || k === "T") game.cycleTime(1);
+        else if (k === "c" || k === "C") game.setCpus(game.cpus + 1 > WORMS_RULES.maxTeams ? 0 : game.cpus + 1);
+        else if (k === "k" || k === "K") game.setKeyboard(!game.keyboard);
+        else if (k === "Enter") game.startMatch();
+        return;
+      }
+      if (game.phase === "gameover") { if (down && k === "Enter" && game.phaseT <= 0) game.toLobby(); return; }
+      const key = WORMS_KEYMAP[k];
+      if (key) { if (!e.repeat || !down) game.pressKeyboard(key, down); return; }
+      if (!down) return;
+      if (k >= "1" && k <= "5") game.setFuse(null, Number(k));
+      else if (k === "q" || k === "Q" || k === "e" || k === "E" || k === "Tab") {
+        const team = game.teams.find(t => t.kind === "keyboard");
+        if (!team) return;
+        const dir = k === "q" || k === "Q" || (k === "Tab" && e.shiftKey) ? -1 : 1;
+        const usable = WEAPONS.filter(w => team.ammo[w.id] !== 0 && w.delay < game.round);
+        const i = usable.findIndex(w => w.id === team.weapon);
+        game.selectWeapon(null, usable[(i + dir + usable.length) % usable.length].id);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKey);
+    window.addEventListener("pointerdown", unlock);
+    const visibility = () => { last = 0; acc = 0; for (const t of game.teams) for (const key of [...t.keys]) game.press(t, key, false); };
+    document.addEventListener("visibilitychange", visibility);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKey);
+      window.removeEventListener("pointerdown", unlock);
+      document.removeEventListener("visibilitychange", visibility);
+      audio.close();
+      if (wormsRef.current === game) wormsRef.current = null;
+      wormsAudioRef.current = null;
+      setWormsHud(null);
+    };
+  }, [activeGame, gameEpoch]);
 
   // ─── Canvas resize ───────────────────────────────────────────────────────
   useEffect(() => {
-    if (activeGame !== "snake" && activeGame !== "pong" && activeGame !== "dash" && activeGame !== "polarbash") return;
+    if (activeGame !== "snake" && activeGame !== "pong" && activeGame !== "dash" && activeGame !== "polarbash" && activeGame !== "worms") return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const resize = () => {
-      canvas.width = canvas.offsetWidth;
-      canvas.height = canvas.offsetHeight;
+      const dpr = activeGame === "snake" || activeGame === "polarbash" || activeGame === "worms" ? Math.min(window.devicePixelRatio || 1, 2) : 1;
+      canvas.width = canvas.offsetWidth * dpr;
+      canvas.height = canvas.offsetHeight * dpr;
     };
     resize();
     window.addEventListener("resize", resize);
@@ -1691,43 +1125,48 @@ useEffect(() => {
     setTimeout(() => setCopyFeedback(false), 2000);
   };
 
-  const handleGalleryBack = () => {
-    setActiveGame(null);
-    snakesRef.current.clear();
-    foodRef.current = [];
-    pongInputRef.current.clear();
-    pongInitializedRef.current = false;
-    const state = pongStateRef.current;
-    state.leftScore = 0;
-    state.rightScore = 0;
-    state.leftPlayerId = null;
-    state.rightPlayerId = null;
-    state.leftPlayerName = "Player 1";
-    state.rightPlayerName = "AI";
-    const ds = dashStateRef.current;
-    ds.running = false;
-    ds.obstacles = [];
-    ds.particles = [];
-    ds.score = 0;
-    dashInitializedRef.current = false;
-    const pol = polarStateRef.current;
-    pol.bears = [];
-    pol.particles = [];
-    pol.snowParticles = [];
-    pol.roundActive = false;
-    pol.winner = null;
-    pol.initialized = false;
-    polarInputRef.current.clear();
-    setPlayerCount(0);
-    getSocket().emit("game_ended", { roomCode });
-  };
+  const handleGalleryBack = () => command("menu");
+
+  useEffect(() => {
+    executeRef.current = action => {
+      if (action === "lobby") {
+        pausedRef.current = false;
+        setActiveGame(null); activeGameRef.current = null;
+        pongInputRef.current.clear();
+        getSocket().emit("game_ended", { roomCode });
+      } else {
+        const idx = GAMES.findIndex(g => g.id === activeGameRef.current);
+        if (idx < 0) return;
+        // Keep room membership separate from game entities across fresh rounds.
+        snakesRef.current = new Map([...playersRef.current].map(([id, player]) => [id, createSnake(player)]));
+        setGameEpoch(epoch => epoch + 1);
+        getSocket().emit("game_started", { gameIndex: idx, gameName: GAMES[idx].name });
+      }
+    };
+  }, [roomCode]);
+
+  useEffect(() => {
+    if (status === "ready") getSocket().emit("host_gallery", { galleryIndex });
+  }, [galleryIndex, status]);
+
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (!activeGame) return;
+      const action = e.key === "Escape" ? (session?.paused ? (session.confirm ? "cancel" : "resume") : "menu")
+        : session?.paused && !session.confirm ? ({ ArrowUp: "up", ArrowDown: "down", Enter: "select" } as const)[e.key as "ArrowUp"] : undefined;
+      if (action) { e.preventDefault(); getSocket().emit("remote_command", { roomCode, action }); }
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [activeGame, session, roomCode]);
 
   return (
     <main className="h-screen bg-[#06060e] text-white flex flex-col font-sans overflow-hidden">
+      {session && <SessionMenu state={session} enabled command={command} />}
       {/* ── Console status bar ─────────────────────────────────────────── */}
       <header className="flex items-center justify-between px-6 py-3 border-b border-white/[0.06] bg-[#0a0a18] shrink-0">
         <div className="flex items-center gap-4">
-          <span className="text-lg">🎮</span>
+          <span className="text-lg">🎮</span><Link className="text-xs text-white/60" href="/join">Use as controller</Link>
           <span className="text-sm font-bold tracking-wide bg-gradient-to-r from-violet-400 to-cyan-400 bg-clip-text text-transparent uppercase">
             NexusPlay
           </span>
@@ -1768,7 +1207,7 @@ useEffect(() => {
 
       {/* ── Game active: full canvas ──────────────────────────────────── */}
       {activeGame ? (
-        <div className="flex-1 relative bg-black">
+        <div className="flex-1 relative bg-black" inert={Boolean(session?.paused)}>
           {/* CRT frame */}
           <div className="absolute inset-4 z-10 pointer-events-none rounded-2xl ring-1 ring-white/[0.06] shadow-[inset_0_0_100px_rgba(0,0,0,0.4)]" />
 
@@ -1782,41 +1221,25 @@ useEffect(() => {
           </div>
 
           {/* Game HUD overlay */}
-          <div className="absolute top-6 left-6 right-6 flex items-start justify-between z-20 pointer-events-none">
+          <div className={activeGame === "snake" || activeGame === "polarbash" || activeGame === "worms" ? "absolute bottom-4 left-6 z-30" : "absolute top-6 left-6 right-6 flex items-start justify-between z-20 pointer-events-none"}>
             <div className="pointer-events-auto">
               <button
                 onClick={handleGalleryBack}
                 className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-black/60 backdrop-blur-md border border-white/10 text-white/50 hover:text-white hover:border-white/30 hover:bg-black/80 transition-all text-xs font-bold uppercase tracking-wider"
               >
-                ← Home
+                ☰ Menu
               </button>
             </div>
-            <div className="flex flex-col items-end gap-2">
+            <div className={activeGame === "snake" || activeGame === "polarbash" || activeGame === "worms" ? "hidden" : "flex flex-col items-end gap-2"}>
               <span className="text-[10px] font-bold uppercase tracking-widest text-white/20 bg-black/40 backdrop-blur-md px-3 py-1.5 rounded-lg border border-white/5">
                 {GAMES.find(g => g.id === activeGame)?.name ?? activeGame}
               </span>
-              {activeGame === "snake" && leaderboard.length > 0 && (
-                <div className="bg-black/50 backdrop-blur-md rounded-xl border border-white/5 p-3 min-w-[140px]">
-                  <h3 className="text-[9px] uppercase tracking-widest text-white/30 mb-2 font-bold">Rank</h3>
-                  <ul className="flex flex-col gap-1.5">
-                    {leaderboard.slice(0, 3).map((entry, idx) => (
-                      <li key={entry.id} className="flex items-center justify-between text-xs">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-white/30 font-mono w-3">{idx + 1}</span>
-                          <span className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }} />
-                          <span className="text-white/70 truncate max-w-[80px]">{entry.name}</span>
-                        </div>
-                        <span className="text-white/40 font-mono">{entry.score}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+
             </div>
           </div>
 
           {/* How to play tooltip (bottom) */}
-          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
+          <div className={`${activeGame === "snake" || activeGame === "polarbash" || activeGame === "worms" ? "hidden" : ""} absolute bottom-6 left-1/2 -translate-x-1/2 z-20 pointer-events-none`}>
             <div className="bg-black/60 backdrop-blur-md rounded-full border border-white/10 px-5 py-2.5">
               <p className="text-[10px] text-white/25 font-medium">
                 {activeGame === "snake" ? "Phone: joystick to steer · ⚡ to boost" :
@@ -1827,14 +1250,86 @@ useEffect(() => {
             </div>
           </div>
 
-          {/* Empty arena notice */}
-          {activeGame === "snake" && playerCount === 0 && (
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
-              <div className="text-center bg-black/40 backdrop-blur-sm rounded-2xl px-8 py-6 border border-white/5">
-                <p className="text-5xl mb-3 opacity-20">🐍</p>
-                <p className="text-white/15 text-sm font-medium">Waiting for players…</p>
+          {activeGame === "polarbash" && polarHud && (() => {
+            const h = polarHud, stage = STAGES[h.stage];
+            const winner = h.roundWinner !== null ? h.bears[h.roundWinner] : null;
+            const champ = h.champion !== null ? h.bears[h.champion] : null;
+            return (
+              <>
+                <div className="polar-top">
+                  <div><span className="polar-eyebrow">NEXUS CLASSIC / POLAR PUSH</span><h1>{stage.name}</h1></div>
+                  {h.phase !== "lobby" && <div className={`polar-clock ${h.suddenDeath ? "sudden" : ""}`}>
+                    <span>{h.suddenDeath ? "SUDDEN DEATH" : `ROUND ${h.round}`}</span>
+                    <strong>{h.suddenDeath ? "MELT!" : `${Math.floor(h.clock / 60)}:${String(h.clock % 60).padStart(2, "0")}`}</strong>
+                  </div>}
+                  <div className="polar-room"><span>JOIN</span><strong>{roomCode}</strong></div>
+                </div>
+                <div className="polar-feed">{h.feed.map((f, i) => <div key={`${f.text}-${i}`} style={{ borderColor: f.color }}>{f.text}</div>)}</div>
+                <div className="polar-cards">
+                  {h.bears.map(b => {
+                    const c = CLASSES.find(k => k.id === b.cls)!;
+                    return (
+                      <div key={b.slot} className={`polar-card ${b.alive || h.phase === "lobby" ? "" : "out"}`} style={{ borderColor: b.color }}>
+                        <div className="polar-card-head"><i style={{ background: b.color }} /><b>{b.name}</b><em>{b.cpu ? "CPU" : `P${b.slot + 1}`}</em></div>
+                        <div className="polar-card-cls">{c.icon} {c.name}</div>
+                        <div className="polar-trophies">{Array.from({ length: POLAR_RULES.winsNeeded }, (_, i) => <span key={i} className={i < b.wins ? "won" : ""}>🏆</span>)}</div>
+                        {h.phase !== "lobby" && <div className="polar-stamina"><i style={{ width: `${b.stamina}%`, background: b.power ? "#ffd76a" : b.stamina >= POLAR_RULES.dashCost ? "#7fe3ff" : "#5b7a95" }} /></div>}
+                        {!b.alive && h.phase !== "lobby" && <div className="polar-splash">SPLASH!</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+                {h.phase === "lobby" && <div className="polar-overlay">
+                  <div className="polar-modal">
+                    <span className="polar-eyebrow">PICK A STAGE · RIDE A BEAR · PUSH THEM IN</span>
+                    <div className="polar-stages">
+                      {STAGES.map((st, i) => <button key={st.id} className={i === h.stage ? "on" : ""} onClick={() => polarRef.current?.setStage(i)}><b>{st.name}</b><span>{st.blurb}</span></button>)}
+                    </div>
+                    <p>{h.humans ? `Pick your bear on your phone, then press READY. ${4 - Math.min(4, h.humans)} CPU bear${4 - h.humans === 1 ? "" : "s"} fill the rest.` : `Join room ${roomCode} on your phone — or start with 4 CPU bears.`} First to {POLAR_RULES.winsNeeded} round wins takes the match.</p>
+                    <button className="polar-go" onClick={() => polarRef.current?.startMatch()}>{h.humans && h.bears.filter(b => !b.cpu).every(b => b.ready) ? "Starting…" : "Start now ↵"}</button>
+                  </div>
+                </div>}
+                {h.phase === "intro" && <div className="polar-banner"><span>ROUND {h.round}</span><strong>{stage.name}</strong></div>}
+                {h.phase === "countdown" && <div className="polar-banner big" key={h.timer}><strong>{h.timer}</strong></div>}
+                {h.phase === "playing" && h.clock > POLAR_RULES.roundTime - 1 && <div className="polar-banner big go"><strong>PUSH!</strong></div>}
+                {h.phase === "roundover" && <div className="polar-banner"><span>ROUND {h.round}</span><strong style={{ color: winner?.color }}>{winner ? `${winner.name} wins!` : "Draw!"}</strong></div>}
+                {h.phase === "matchover" && champ && <div className="polar-overlay">
+                  <div className="polar-modal">
+                    <span className="polar-eyebrow">KING OF THE ICE</span>
+                    <h2 style={{ color: champ.color }}>{champ.name} wins!</h2>
+                    <div className="polar-podium">
+                      {[...h.bears].sort((a, b) => b.wins - a.wins || b.knocks - a.knocks).map(b => <div key={b.slot}><b style={{ color: b.color }}>{b.name}</b><span>{b.wins} 🏆 · {b.knocks} push{b.knocks === 1 ? "" : "es"}</span></div>)}
+                    </div>
+                    <button className="polar-go" disabled={!h.canRematch} onClick={() => polarRef.current?.toLobby()}>Rematch ↵</button>
+                  </div>
+                </div>}
+              </>
+            );
+          })()}
+
+          {activeGame === "worms" && wormsHud && <WormsHudView h={wormsHud} roomCode={roomCode} game={wormsRef} />}
+
+          {activeGame === "snake" && (
+            <>
+              <div className="slither-top">
+                <div><span className="slither-eyebrow">NEXUS ORIGINAL / 01</span><h1>slither<span>play.</span></h1></div>
+                <div className="slither-clock"><span>{snakeHud.phase === "finished" ? "ROUND COMPLETE" : "MOST POINTS WINS"}</span><strong>{Math.floor(snakeHud.remaining / 60)}:{String(snakeHud.remaining % 60).padStart(2, "0")}</strong></div>
+                <div className="slither-room"><span>JOIN THE ARENA</span><strong>{roomCode}</strong></div>
               </div>
-            </div>
+              <div className="slither-scores">
+                {leaderboard.map((entry, i) => <div key={entry.id} className="slither-score"><b style={{ color: entry.color }}>{String(i + 1).padStart(2, "0")}</b><i style={{ background: entry.color }} /><span>{entry.name}</span><strong>{entry.score}</strong></div>)}
+              </div>
+              <div className="slither-feed">{snakeHud.feed.map((text, i) => <div key={`${text}-${i}`}>{text}</div>)}</div>
+              <div className="slither-help">EAT TO GROW <span>→</span> CUT OFF RIVALS <span>→</span> HOLD BOOST TO ESCAPE <span>·</span> +100 PER ELIMINATION</div>
+              {(snakeHud.phase === "countdown" || snakeHud.phase === "waiting" || snakeHud.phase === "finished") && <div className="slither-overlay">
+                <div className="slither-modal">
+                  <span className="slither-eyebrow">{snakeHud.phase === "finished" ? "THE GARDEN HAS A CHAMPION" : "SMALL ARENA. BIG RIVALRIES."}</span>
+                  <h2>{snakeHud.phase === "countdown" ? snakeHud.countdown : snakeHud.phase === "waiting" ? "Your crew. Your arena." : `${leaderboard[0]?.name ?? "Nobody"} wins!`}</h2>
+                  <p>{snakeHud.phase === "finished" ? "Collected points survive every crash. Ready for a rematch?" : snakeHud.phase === "waiting" ? `Join room ${roomCode} on your phone. Best with 2–4 friends, room for 8.` : "Eat glowing orbs. Avoid the edge and other snakes. You can cross your own tail."}</p>
+                  {snakeHud.phase === "finished" && <><div className="slither-podium">{leaderboard.slice(0, 3).map((p, i) => <div key={p.id}><b style={{ color: p.color }}>#{i + 1} {p.name}</b><strong>{p.score} pts</strong></div>)}</div><button onClick={() => { slitherRef.current?.reset(); getSocket().emit("game_started", { gameIndex: 0, gameName: "SlitherPlay" }); }}>Play another round ↗</button></>}
+                </div>
+              </div>}
+            </>
           )}
         </div>
       ) : (
@@ -1846,7 +1341,7 @@ useEffect(() => {
               SELECT GAME
             </h2>
             <p className="text-white/20 text-xs mt-2 font-mono tracking-wider">
-              ← → BROWSE &nbsp; ENTER START &nbsp; PHONE REMOTE
+              Use your phone remote to browse and start · Keyboard: ← → Enter
             </p>
           </div>
 
@@ -1922,10 +1417,10 @@ useEffect(() => {
             <div className="w-px h-10 bg-white/[0.06]" />
             {qrDataUrl ? (
               <div className="rounded-lg overflow-hidden border border-white/[0.06] bg-white p-0.5">
-                <img src={qrDataUrl} alt={`QR ${roomCode}`} className="w-24 h-24" />
+                <img src={qrDataUrl} alt={`QR ${roomCode}`} className="w-36 h-36" />
               </div>
             ) : (
-              <div className="w-24 h-24 rounded-lg bg-white/[0.03] animate-pulse" />
+              <div className="w-36 h-36 rounded-lg bg-white/[0.03] animate-pulse" />
             )}
             <div className="w-px h-10 bg-white/[0.06]" />
             <div className="flex flex-col gap-2">
@@ -1943,5 +1438,88 @@ useEffect(() => {
         </div>
       )}
     </main>
+  );
+}
+
+// ─── WormBlitz HUD ─────────────────────────────────────────────────────────
+function WormsHudView({ h, roomCode, game }: { h: WormsSnapshot; roomCode: string; game: React.RefObject<WormsEngine | null> }) {
+  const theme = WORMS_THEMES[h.theme];
+  const team = h.teams[h.current];
+  const g = () => game.current;
+  if (h.phase === "lobby") {
+    const seated = h.humans.filter(x => x.seated);
+    return (
+      <div className="worms-overlay">
+        <div className="worms-modal">
+          <span className="worms-eyebrow">NEXUS ORIGINAL · TURN-BASED ARTILLERY</span>
+          <h2 className="worms-logo">Worm<span>Blitz</span></h2>
+          <div className="worms-themes">
+            {WORMS_THEMES.map((t, i) => (
+              <button key={t.id} className={i === h.theme ? "on" : ""} onClick={() => g()?.setTheme(i)} style={{ background: `linear-gradient(180deg, ${t.sky[0]}, ${t.sky[2]} 70%, ${t.water[1]} 70%)` }}>
+                <b>{t.name}</b><span>{t.blurb}</span>
+              </button>
+            ))}
+          </div>
+          <div className="worms-settings">
+            <div><span>WORMS / TEAM</span><div><button onClick={() => g()?.cycleWorms(-1)}>‹</button><b>{h.wormsPer}</b><button onClick={() => g()?.cycleWorms(1)}>›</button></div></div>
+            <div><span>TURN TIME</span><div><button onClick={() => g()?.cycleTime(-1)}>‹</button><b>{h.turnTime}s</b><button onClick={() => g()?.cycleTime(1)}>›</button></div></div>
+            <div><span>CPU TEAMS</span><div><button onClick={() => g()?.setCpus(h.cpus - 1)}>‹</button><b>{h.cpus}</b><button onClick={() => g()?.setCpus(h.cpus + 1)}>›</button></div></div>
+            <div><span>KEYBOARD TEAM</span><div><button className="wide" onClick={() => g()?.setKeyboard(!h.keyboard)}>{h.keyboard ? "ON" : "OFF"}</button></div></div>
+          </div>
+          <div className="worms-roster">
+            {seated.map(p => <div key={p.id} style={{ borderColor: p.color }}><i style={{ background: p.color }} /><b>{p.name}</b><em className={p.ready ? "ok" : ""}>{p.ready ? "READY" : "picking…"}</em></div>)}
+            {h.keyboard && <div style={{ borderColor: "#ffffff55" }}><i style={{ background: "#fff" }} /><b>Keyboard</b><em className="ok">HOST</em></div>}
+            {Array.from({ length: h.cpus }, (_, i) => <div key={i} style={{ borderColor: "#ffffff22" }}><i style={{ background: "#888" }} /><b>CPU {i + 1}</b><em>BOT</em></div>)}
+          </div>
+          <p>{seated.length ? "Phones press READY to deploy." : `Join room ${roomCode} on your phone, or play on the keyboard.`} Keyboard: ←→ walk · ↑↓ aim · SPACE fire (hold) · ENTER jump · ⌫ backflip · Q/E weapon · 1–5 fuse · M mute</p>
+          <button className="worms-go" disabled={h.teamCount < 2} onClick={() => g()?.startMatch()}>Deploy {h.teamCount} teams ↵</button>
+        </div>
+      </div>
+    );
+  }
+  const wind = Math.round(h.wind * 100);
+  const maxHp = Math.max(...h.teams.map(t => t.max));
+  const weapon = WEAPON[h.weapon];
+  const ammo = h.ammo[h.weapon];
+  return (
+    <>
+      <div className="worms-top">
+        <div><span className="worms-eyebrow">WORMBLITZ · ROUND {h.round}{h.suddenDeath ? " · SUDDEN DEATH" : ""}</span><h1>{theme.name}</h1></div>
+        {team && <div className="worms-turn" style={{ ["--tc" as string]: team.color }}>
+          <div className={`worms-timer ${h.timer <= 5 && !h.retreat ? "hot" : ""} ${h.retreat ? "retreat" : ""}`}><strong>{h.phase === "turn" || h.phase === "retreat" ? h.timer : "–"}</strong><span>{h.retreat ? "RUN!" : "SEC"}</span></div>
+          <div className="worms-who"><b>{team.name}</b><span>{h.wormName}</span></div>
+          <div className="worms-wind"><span>WIND</span><div className="worms-wind-bar"><i className={wind < 0 ? "l" : "r"} style={{ width: `${Math.abs(wind) / 2}%` }} /></div><em>{wind === 0 ? "calm" : `${Math.abs(wind)} ${wind < 0 ? "◀" : "▶"}`}</em></div>
+        </div>}
+        <div className="worms-room"><span>JOIN</span><strong>{roomCode}</strong></div>
+      </div>
+      <div className="worms-feed">{h.feed.map((f, i) => <div key={`${f.text}-${i}`} style={{ borderColor: f.color }}>{f.text}</div>)}</div>
+      <div className="worms-teams">
+        {h.teams.map(t => (
+          <div key={t.idx} className={`${t.idx === h.current ? "on" : ""} ${t.alive ? "" : "out"}`}>
+            <b style={{ color: t.color }}>{t.name}</b>
+            <div className="worms-hpbar"><i style={{ width: `${(t.hp / maxHp) * 100}%`, background: t.color }} /></div>
+            <em>{t.hp}</em>
+          </div>
+        ))}
+      </div>
+      {team && h.phase !== "gameover" && <div className="worms-arsenal" style={{ ["--tc" as string]: team.color }}>
+        <div className="worms-current"><span className="icon">{weapon.icon}</span><div><b>{weapon.name}</b><span>{ammo < 0 ? "∞" : `×${ammo}`}{weapon.fuse ? ` · ${h.fuse}s fuse` : ""}{h.weapon === "shotgun" && h.shotsLeft ? " · 1 shot left" : ""}{h.jet > 0 ? ` · fuel ${h.jet.toFixed(1)}` : ""}</span></div></div>
+        <div className="worms-tray">
+          {WEAPONS.map(w => <i key={w.id} title={w.name} className={`${w.id === h.weapon ? "on" : ""} ${h.ammo[w.id] === 0 || w.delay >= h.round ? "off" : ""}`}>{w.icon}{h.ammo[w.id] > 0 && <sub>{h.ammo[w.id]}</sub>}{w.delay >= h.round && <sub>R{w.delay + 1}</sub>}</i>)}
+        </div>
+        {team.kind === "keyboard" && <p className="worms-hint">{h.targeting ? "Arrows move the cursor · SPACE to confirm" : weapon.hint}</p>}
+      </div>}
+      {h.banner && h.phase !== "gameover" && <div className="worms-banner" key={h.banner} style={{ color: h.bannerColor }}><strong>{h.banner}</strong></div>}
+      {h.phase === "gameover" && <div className="worms-overlay">
+        <div className="worms-modal">
+          <span className="worms-eyebrow">BATTLE OVER</span>
+          <h2 style={{ color: h.winner !== null ? h.teams[h.winner].color : "#fff" }}>{h.winner !== null ? `${h.teams[h.winner].name} win!` : "Mutual destruction!"}</h2>
+          <div className="worms-podium">
+            {[...h.teams].sort((a, b) => b.alive - a.alive || b.hp - a.hp || b.kills - a.kills).map(t => <div key={t.idx}><b style={{ color: t.color }}>{t.name}</b><span>{t.alive} alive · {t.kills} kill{t.kills === 1 ? "" : "s"} · {t.dealt} dmg</span></div>)}
+          </div>
+          <button className="worms-go" disabled={!h.canRematch} onClick={() => g()?.toLobby()}>Back to the war room ↵</button>
+        </div>
+      </div>}
+    </>
   );
 }
