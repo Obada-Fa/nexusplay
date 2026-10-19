@@ -12,5 +12,9 @@
 .controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 24px; margin-top: 26px; font-size: 13px; color: #c8e9f8; }
 .controls label { display: flex; align-items: center; gap: 12px; }
 .controls input { accent-color: #7dd3fc; }
+.teams { display: flex; align-items: center; gap: 8px; }
+.teams button { cursor: pointer; width: 26px; height: 26px; border-radius: 99px; border: 2px solid #ffffff30; }
+.teams button[aria-pressed="true"] { outline: 2px solid #edf6ff; outline-offset: 2px; }
+.teams .all { width: auto; padding: 0 12px; font-size: 12px; font-weight: 650; background: #ffffff0d; }
 .note { margin-top: 24px; color: #a9d4e799; font-size: 12px; text-align: center; }
 @media (max-width: 520px) { .page { padding: 24px 16px; } .header h1 { font-size: 24px; } .header a { padding: 10px 14px; } .canvas { height: 44vh; } .motions button { padding: 10px 16px; } }
