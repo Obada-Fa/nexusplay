@@ -184,10 +184,10 @@ function JoystickController({ roomCode }: { roomCode: string }) {
   }, [roomCode]);
 
   return (
-    <div className="w-full flex-1 flex items-end justify-between px-6 pb-8 select-none touch-none">
+    <div className="w-full flex-1 flex items-end justify-between px-6 pb-8 snake-ctl select-none touch-none landscape:absolute landscape:inset-0 landscape:items-center landscape:px-10 landscape:pb-0 landscape:pointer-events-none">
       {/* Joystick */}
       <div
-        className="relative rounded-full border-2 border-white/[0.08] bg-white/[0.03] flex items-center justify-center shrink-0 shadow-[inset_0_0_30px_rgba(0,0,0,0.3)]"
+        className="relative rounded-full border-2 border-white/[0.08] bg-white/[0.03] flex items-center justify-center shrink-0 shadow-[inset_0_0_30px_rgba(0,0,0,0.3)] landscape:pointer-events-auto"
         style={{ width: "140px", height: "140px" }}
         ref={joystickRef}
         onPointerDown={handleJoystickMove}
@@ -209,7 +209,7 @@ function JoystickController({ roomCode }: { roomCode: string }) {
         onPointerUp={handleBoostEnd}
         onPointerCancel={handleBoostEnd}
         onContextMenu={(e) => e.preventDefault()}
-        className={`w-24 h-24 shrink-0 rounded-full text-3xl font-black border-2 transition-all duration-75
+        className={`w-24 h-24 shrink-0 rounded-full text-3xl font-black border-2 transition-all duration-75 landscape:pointer-events-auto
           ${actionFlash
             ? "bg-amber-400 border-amber-200 text-black scale-90 shadow-[0_0_40px_rgba(251,191,36,0.8)]"
             : "bg-gradient-to-b from-violet-600 to-violet-800 border-violet-500/30 text-white/90 shadow-[0_0_20px_rgba(139,92,246,0.3)]"
@@ -234,11 +234,11 @@ function DashController({ roomCode }: { roomCode: string }) {
 
   return (
     <div
-      className="w-full flex-1 flex items-center justify-center px-6 pb-8 select-none touch-none overscroll-none"
+      className="w-full flex-1 flex items-center justify-center px-6 pb-8 landscape:pb-2 select-none touch-none overscroll-none"
       onPointerDown={handleJump}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <div className={`w-56 h-56 rounded-full border-2 flex flex-col items-center justify-center gap-2 transition-all duration-75
+      <div className={`w-56 h-56 landscape:w-44 landscape:h-44 rounded-full border-2 flex flex-col items-center justify-center gap-2 transition-all duration-75
         ${flashing
           ? "bg-red-500/40 border-red-400/80 scale-90 shadow-[0_0_60px_rgba(239,68,68,0.6)]"
           : "bg-gradient-to-b from-red-600/60 to-red-800/60 border-red-500/30 shadow-[0_0_30px_rgba(239,68,68,0.25)]"
@@ -278,7 +278,7 @@ function PaddleController({ roomCode, side }: { roomCode: string; side: "left" |
   }, [emitMove]);
 
   return (
-    <div className="w-full flex-1 flex flex-col items-center justify-center gap-3 px-4 pb-8 select-none touch-none">
+    <div className="w-full flex-1 flex flex-col items-center justify-center gap-3 px-4 pb-8 landscape:pb-2 select-none touch-none">
       <span className="text-[10px] font-mono uppercase tracking-[0.2em] text-white/20">
         {side ? `P${side === "left" ? "1" : "2"} · ${side.toUpperCase()}` : "WAITING"}
       </span>
@@ -289,7 +289,7 @@ function PaddleController({ roomCode, side }: { roomCode: string; side: "left" |
           onPointerLeave={handleStop}
           onPointerCancel={handleStop}
           onContextMenu={(e) => e.preventDefault()}
-          className={`w-28 h-44 shrink-0 rounded-3xl text-5xl font-black border-2 transition-all duration-75
+          className={`w-28 h-44 landscape:w-[34vw] landscape:h-[48vh] shrink-0 rounded-3xl text-5xl font-black border-2 transition-all duration-75
             ${heldDir === "up"
               ? "bg-violet-400/60 border-violet-300/60 scale-95 shadow-[0_0_40px_rgba(139,92,246,0.7)]"
               : "bg-gradient-to-b from-violet-600/50 to-violet-800/50 border-violet-500/20 text-white/80 shadow-[0_0_20px_rgba(139,92,246,0.2)]"
@@ -303,7 +303,7 @@ function PaddleController({ roomCode, side }: { roomCode: string; side: "left" |
           onPointerLeave={handleStop}
           onPointerCancel={handleStop}
           onContextMenu={(e) => e.preventDefault()}
-          className={`w-28 h-44 shrink-0 rounded-3xl text-5xl font-black border-2 transition-all duration-75
+          className={`w-28 h-44 landscape:w-[34vw] landscape:h-[48vh] shrink-0 rounded-3xl text-5xl font-black border-2 transition-all duration-75
             ${heldDir === "down"
               ? "bg-violet-400/60 border-violet-300/60 scale-95 shadow-[0_0_40px_rgba(139,92,246,0.7)]"
               : "bg-gradient-to-b from-violet-600/50 to-violet-800/50 border-violet-500/20 text-white/80 shadow-[0_0_20px_rgba(139,92,246,0.2)]"
@@ -360,7 +360,7 @@ function PolarController({ player, roomCode, status }: { player: Player; roomCod
     </div>
   );
   const shell = (children: React.ReactNode) => (
-    <div className="polar-phone h-[100dvh] w-full overflow-hidden flex flex-col items-center justify-between py-6 px-4 select-none touch-none overscroll-none text-white">{children}</div>
+    <div className="polar-phone h-[100dvh] w-full overflow-hidden flex flex-col items-center justify-between py-6 px-4 landscape:py-2 select-none touch-none overscroll-none text-white">{children}</div>
   );
 
   if (!status) return shell(<>{header}<p className="text-sm text-white/60">Connecting to the ice…</p><div /></>);
@@ -409,12 +409,12 @@ function PolarController({ player, roomCode, status }: { player: Player; roomCod
     : status.phase === "roundover" ? (status.roundWinner ? `${status.roundWinner} wins the round` : "Draw!") : !status.alive ? "SPLASH! 💦" : null;
   return shell(<>
     {header}
-    <div className="text-center min-h-[70px]">
+    <div className="text-center min-h-[70px] landscape:min-h-[40px]">
       {banner ? <h2 className="text-3xl font-black">{banner}</h2> : <p className="text-[10px] font-mono tracking-[0.2em] text-sky-200/70">{status.stage.toUpperCase()} · ROUND {status.round} · {status.clock}s</p>}
       {!status.alive && status.phase === "playing" && <p className="text-sm text-white/60 mt-1">You fell in. Next round starts soon.</p>}
       {status.power && status.alive && <p className="text-sm font-black text-amber-300 mt-1">🐟 POWER FISH! Mega push!</p>}
     </div>
-    <div className="w-full max-w-[420px] flex-1 flex items-end justify-between gap-4 pb-6">
+    <div className="polar-ctl w-full max-w-[420px] landscape:max-w-none flex-1 flex items-end landscape:items-center justify-between gap-4 pb-6 landscape:pb-2">
       <div ref={stickRef} onPointerDown={move} onPointerMove={move} onPointerUp={end} onPointerCancel={end} onContextMenu={e => e.preventDefault()}
         className="relative rounded-full border-2 border-white/15 bg-white/[0.05] flex items-center justify-center shrink-0 shadow-[inset_0_0_30px_rgba(0,0,0,0.35)]" style={{ width: 156, height: 156 }}>
         <div ref={knobRef} className="w-16 h-16 rounded-full border-2 border-white/30 pointer-events-none transition-transform duration-75" style={{ background: `radial-gradient(circle at 35% 30%, #fff, ${color})` }} />
@@ -543,7 +543,8 @@ function WormsController({ player, roomCode, status }: { player: Player; roomCod
   const ammo = status.ammo[status.weapon];
   const wind = Math.round(status.wind * 100);
   const fireLabel = status.sheep ? "BOOM" : status.targeting ? "MARK" : status.jet > 0 ? "STOP" : w.mode === "charge" || (status.weapon === "homing" && !status.targeting) ? "FIRE" : status.weapon === "skip" ? "SKIP" : "USE";
-  return shell(<>
+  return shell(<div className="worms-play">
+    <div className="worms-center">
     <div className="w-full max-w-[420px] flex items-center justify-between">
       {header}
       <div className="text-right">
@@ -561,7 +562,8 @@ function WormsController({ player, roomCode, status }: { player: Player; roomCod
       </button>
       {w.fuse && !status.retreat && <div className="worms-fuses">{[1, 2, 3, 4, 5].map(v => <button key={v} className={status.fuse === v ? "on" : ""} onClick={() => act({ kind: "fuse", value: v })}>{v}s</button>)}</div>}
     </div>
-    <div className="w-full max-w-[420px] flex items-end justify-between gap-3 pb-2">
+    </div>
+    <div className="worms-controls w-full max-w-[420px] flex items-end justify-between gap-3 pb-2">
       <div className="worms-pad">
         <div /><HoldButton k="up" roomCode={roomCode}>▲</HoldButton><div />
         <HoldButton k="left" roomCode={roomCode}>◀</HoldButton>
@@ -589,7 +591,7 @@ function WormsController({ player, roomCode, status }: { player: Player; roomCod
         </div>
       </div>
     </div>}
-  </>);
+  </div>);
 }
 
 // ─── Controller Router ──────────────────────────────────────────────────────
@@ -745,15 +747,15 @@ function Controller({ player, roomCode, initialGame, initialSide }: { player: Pl
 
   // Live telemetry is sent only to this player's phone.
   return (
-    <div className="snake-phone h-[100dvh] w-full overflow-hidden flex flex-col items-center justify-between py-6 px-4 select-none touch-none overscroll-none">
+    <div className="snake-phone relative h-[100dvh] w-full overflow-hidden flex flex-col items-center justify-between py-6 px-4 landscape:py-3 landscape:justify-start landscape:gap-2 select-none touch-none overscroll-none">
       {header}
-      <div className="text-center mt-6">
+      <div className="text-center mt-6 landscape:mt-0">
         <div className="snake-phone-stats"><div><span>POINTS</span><strong>{snakeStatus?.score ?? 0}</strong></div><div><span>TIME LEFT</span><strong>{Math.floor((snakeStatus?.remaining ?? 180) / 60)}:{String((snakeStatus?.remaining ?? 180) % 60).padStart(2, "0")}</strong></div><div><span>KILLS</span><strong>{snakeStatus?.kills ?? 0}</strong></div></div>
         <div className="snake-phone-meter"><i style={{ width: `${snakeStatus?.boost ?? 0}%` }} /></div>
         <p className="text-[10px] text-emerald-100/50">{snakeStatus?.phase === "countdown" ? "Get ready. Look at the big screen!" : (snakeStatus?.boost ?? 0) < 2 ? "Eat orbs to fuel your boost" : "Boost burns length. Your points are safe."}</p>
       </div>
       <JoystickController roomCode={roomCode} />
-      <p className="text-[9px] tracking-widest text-white/40 pb-2">STEER WITH YOUR LEFT THUMB · HOLD ⚡ TO BOOST</p>
+      <p className="text-[9px] tracking-widest text-white/40 pb-2 landscape:absolute landscape:bottom-1 landscape:left-0 landscape:right-0 landscape:text-center landscape:pb-0">STEER WITH YOUR LEFT THUMB · HOLD ⚡ TO BOOST</p>
     </div>
   );
 }
